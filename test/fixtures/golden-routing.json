@@ -4,5 +4,6 @@
   { "kind": "lesson", "confidence": 0.8, "text": "D1 timestamps must be integers", "expect": ["brain"] },
   { "kind": "noise", "confidence": 0.9, "text": "ran ls to look around", "expect": [] },
   { "kind": "fact", "confidence": 0.3, "text": "maybe the build is flaky?", "expect": [] },
-  { "kind": "fact", "confidence": 0.9, "text": "HERMES_INTERNAL_KEY=sk-abc123deadbeef", "expect": [] }
+  { "kind": "fact", "confidence": 0.9, "text": "HERMES_INTERNAL_KEY=sk-abc123deadbeef", "expect": [] },
+  { "kind": "fact", "confidence": 0.9, "text": "db at postgresql://admin:hunter2@ep-foo.neon.tech/db", "expect": [] }
 ]

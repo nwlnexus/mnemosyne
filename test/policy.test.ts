@@ -16,4 +16,6 @@ test.each(golden)("route: $text", ({ kind, confidence, text, expect: want }) => 
 test("isSecret flags token-shaped strings", () => {
   expect(isSecret("sk-abc123deadbeef")).toBe(true);
   expect(isSecret("PR #201 merged")).toBe(false);
+  expect(isSecret("connected via postgresql://admin:hunter2@ep-foo.neon.tech/db")).toBe(true);
+  expect(isSecret("see https://example.com/docs")).toBe(false);
 });

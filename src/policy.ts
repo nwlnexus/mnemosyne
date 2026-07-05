@@ -10,6 +10,7 @@ const SECRET_PATTERNS: RegExp[] = [
   /\b[A-Z0-9_]*(?:KEY|SECRET|TOKEN|PASSWORD|PASSWD)\b\s*[:=]\s*\S{6,}/i,
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
   /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\./, // JWT
+  /\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@]*:[^\s/@]+@/i, // credentials in a connection string / URL
 ];
 
 export function isSecret(text: string): boolean {
