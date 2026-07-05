@@ -2,8 +2,12 @@
   "name": "@nwlnexus/mnemosyne",
   "version": "0.1.0",
   "type": "module",
-  "bin": { "mnemosyne": "dist/cli.js" },
-  "engines": { "node": ">=24" },
+  "bin": {
+    "mnemosyne": "dist/cli.js"
+  },
+  "engines": {
+    "node": ">=24"
+  },
   "packageManager": "pnpm@11.9.0",
   "scripts": {
     "build": "tsc",
@@ -15,6 +19,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.3.5",
+    "@types/node": "^26.1.0",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
   }
