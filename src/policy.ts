@@ -18,7 +18,11 @@ export function isSecret(text: string): boolean {
 }
 
 export function route(learning: Learning): Target[] {
-	if (isSecret(learning.text)) return [];
+	if (
+		isSecret(learning.text) ||
+		(learning.title !== undefined && isSecret(learning.title))
+	)
+		return [];
 	if (learning.kind === "noise") return [];
 	if (learning.confidence < MIN_CONFIDENCE) return [];
 

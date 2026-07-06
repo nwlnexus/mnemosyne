@@ -29,3 +29,14 @@ test("isSecret flags token-shaped strings", () => {
 	).toBe(true);
 	expect(isSecret("see https://example.com/docs")).toBe(false);
 });
+
+test("route drops a learning whose title is secret even if text is clean", () => {
+	const l: Learning = {
+		text: "rotated the database password",
+		kind: "decision",
+		confidence: 0.9,
+		title: "HERMES_INTERNAL_KEY=sk-abc123deadbeef",
+		provenance: prov,
+	};
+	expect(route(l)).toEqual([]);
+});

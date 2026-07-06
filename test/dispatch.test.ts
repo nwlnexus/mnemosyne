@@ -28,7 +28,7 @@ test("dispatch writes mem0 payload and brain inbox file for a decision", async (
 	expect(matchingFiles).toHaveLength(1);
 	const body = readFileSync(join(inbox, matchingFiles[0]), "utf8");
 	expect(body).toContain("status: new");
-	expect(body).toContain("session: s1");
+	expect(body).toContain('session: "s1"');
 });
 
 test("dispatch prevents slug collision by appending content hash", async () => {
