@@ -1,5 +1,6 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { hashLearning } from "./ledger.js";
 import type { Target } from "./policy.js";
 import { route } from "./policy.js";
 import type { Learning } from "./types.js";
@@ -37,16 +38,17 @@ function mem0Payload(l: Learning): string {
 
 function inboxDoc(l: Learning): string {
 	const title = l.title ?? l.text.slice(0, 60);
+	const why = `routed as ${l.kind} (confidence ${l.confidence})`;
 	return [
 		"---",
 		"type: source",
-		`title: ${title}`,
+		`title: ${JSON.stringify(title)}`,
 		"status: new",
 		`captured: ${l.provenance.ts.slice(0, 10)}`,
 		"provenance:",
 		`  session: ${l.provenance.session}`,
 		`  cwd: ${l.provenance.cwd}`,
-		`  why: routed as ${l.kind} (confidence ${l.confidence})`,
+		`  why: ${JSON.stringify(why)}`,
 		"---",
 		"",
 		l.text,
@@ -62,11 +64,12 @@ export async function dispatch(
 	const targets = route(l);
 	for (const t of targets) {
 		if (t === "mem0") await deps.writeMem0(mem0Payload(l));
-		if (t === "brain")
-			writeFileSync(
-				join(deps.brainInboxDir, `${slugify(l.title ?? l.text)}.md`),
-				inboxDoc(l),
-			);
+		if (t === "brain") {
+			const slug = slugify(l.title ?? l.text);
+			const hash = hashLearning(l).slice(0, 8);
+			const filename = `${slug}-${hash}.md`;
+			writeFileSync(join(deps.brainInboxDir, filename), inboxDoc(l));
+		}
 	}
 	return targets;
 }

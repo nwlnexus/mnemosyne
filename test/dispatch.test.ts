@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test, vi } from "vitest";
@@ -23,9 +23,57 @@ test("dispatch writes mem0 payload and brain inbox file for a decision", async (
 	expect(JSON.parse(writeMem0.mock.calls[0][0]).text).toBe(
 		"chose D1 over Neon for cost",
 	);
-	const file = join(inbox, "d1-vs-neon.md");
-	expect(existsSync(file)).toBe(true);
-	const body = readFileSync(file, "utf8");
+	const files = readdirSync(inbox);
+	const matchingFiles = files.filter((f) => f.startsWith("d1-vs-neon-"));
+	expect(matchingFiles).toHaveLength(1);
+	const body = readFileSync(join(inbox, matchingFiles[0]), "utf8");
 	expect(body).toContain("status: new");
 	expect(body).toContain("session: s1");
+});
+
+test("dispatch prevents slug collision by appending content hash", async () => {
+	const inbox = mkdtempSync(join(tmpdir(), "inbox-"));
+	const writeMem0 = vi.fn(async () => {});
+
+	// Two distinct learnings with the same title
+	const l1: Learning = {
+		text: "chose D1 for cost savings",
+		kind: "decision",
+		confidence: 0.9,
+		title: "Dup Title",
+		provenance: { session: "s1", cwd: "/repo", ts: "2026-07-05T00:00:00Z" },
+	};
+
+	const l2: Learning = {
+		text: "chose D1 for performance",
+		kind: "decision",
+		confidence: 0.85,
+		title: "Dup Title",
+		provenance: { session: "s2", cwd: "/repo", ts: "2026-07-05T01:00:00Z" },
+	};
+
+	await dispatch(l1, { writeMem0, brainInboxDir: inbox });
+	await dispatch(l2, { writeMem0, brainInboxDir: inbox });
+
+	const files = readdirSync(inbox);
+	const matchingFiles = files.filter((f) => f.startsWith("dup-title-"));
+
+	// Both distinct learnings should produce distinct files
+	expect(matchingFiles).toHaveLength(2);
+
+	// Verify content of both files - read all files and check both texts are present
+	const allBodies = matchingFiles.map((f) =>
+		readFileSync(join(inbox, f), "utf8"),
+	);
+	const allContent = allBodies.join("\n");
+
+	// Both files should have status: new
+	expect(allBodies).toHaveLength(2);
+	allBodies.forEach((body) => {
+		expect(body).toContain("status: new");
+	});
+
+	// Both distinct texts should be in the inbox files
+	expect(allContent).toContain("chose D1 for cost savings");
+	expect(allContent).toContain("chose D1 for performance");
 });
