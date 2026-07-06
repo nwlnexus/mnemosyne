@@ -1,0 +1,72 @@
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import type { Target } from "./policy.js";
+import { route } from "./policy.js";
+import type { Learning } from "./types.js";
+
+export type DispatchDeps = {
+	writeMem0: (json: string) => Promise<void>;
+	brainInboxDir: string;
+	slugify?: (s: string) => string;
+};
+
+function defaultSlug(s: string): string {
+	return (
+		s
+			.toLowerCase()
+			.replace(/[^a-z0-9]+/g, "-")
+			.replace(/^-+|-+$/g, "")
+			.slice(0, 60) || "note"
+	);
+}
+
+function mem0Payload(l: Learning): string {
+	return JSON.stringify({
+		user_id: "mnemosyne",
+		text: l.text,
+		infer: false,
+		app: "claude-code",
+		metadata: {
+			kind: l.kind,
+			session: l.provenance.session,
+			cwd: l.provenance.cwd,
+			ts: l.provenance.ts,
+		},
+	});
+}
+
+function inboxDoc(l: Learning): string {
+	const title = l.title ?? l.text.slice(0, 60);
+	return [
+		"---",
+		"type: source",
+		`title: ${title}`,
+		"status: new",
+		`captured: ${l.provenance.ts.slice(0, 10)}`,
+		"provenance:",
+		`  session: ${l.provenance.session}`,
+		`  cwd: ${l.provenance.cwd}`,
+		`  why: routed as ${l.kind} (confidence ${l.confidence})`,
+		"---",
+		"",
+		l.text,
+		"",
+	].join("\n");
+}
+
+export async function dispatch(
+	l: Learning,
+	deps: DispatchDeps,
+): Promise<Target[]> {
+	const slugify = deps.slugify ?? defaultSlug;
+	const targets = route(l);
+	for (const t of targets) {
+		if (t === "mem0") await deps.writeMem0(mem0Payload(l));
+		if (t === "brain")
+			writeFileSync(
+				join(deps.brainInboxDir, `${slugify(l.title ?? l.text)}.md`),
+				inboxDoc(l),
+			);
+	}
+	return targets;
+}
