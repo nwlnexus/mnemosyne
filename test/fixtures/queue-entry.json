@@ -1,0 +1,6 @@
+{
+	"transcript": "test/fixtures/session-basic.jsonl",
+	"session": "s1",
+	"cwd": "/repo",
+	"ts": "2026-07-05T00:00:00Z"
+}
