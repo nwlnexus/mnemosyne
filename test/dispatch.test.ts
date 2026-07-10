@@ -55,10 +55,16 @@ test("dispatch dual-writes a moneta capture alongside mem0", async () => {
 	expect(targets).toContain("moneta");
 	expect(writeMoneta).toHaveBeenCalledOnce();
 	const capture = JSON.parse(writeMoneta.mock.calls[0][0]);
-	// content carries the learning text + its provenance (mem0 payload spirit)
-	expect(capture.content).toContain("chose D1 over Neon for cost");
-	expect(capture.content).toContain("s1");
-	expect(capture.content).toContain("/repo");
+	// content is exactly the learning text — provenance must stay out of the
+	// embedded field so it doesn't dilute recall.
+	expect(capture.content).toBe("chose D1 over Neon for cost");
+	// provenance instead rides in metadata (stored, not embedded)
+	expect(capture.metadata).toEqual({
+		kind: "decision",
+		session: "s1",
+		cwd: "/repo",
+		ts: "2026-07-05T00:00:00Z",
+	});
 	// tags include the mnemosyne marker plus the learning kind
 	expect(capture.tags).toContain("mnemosyne");
 	expect(capture.tags).toContain("decision");
