@@ -38,6 +38,7 @@ function factDeps(writeMem0: (json: string) => Promise<void>, extra = {}) {
 				]),
 		},
 		writeMem0,
+		writeMoneta: vi.fn(async () => {}),
 		...extra,
 	};
 }
@@ -46,7 +47,8 @@ test("missing transcript is moved to dead/ and removed from queue", async () => 
 	const { queueDir, deadDir, inbox, ledgerDir } = makeDirs();
 	writeEntry(queueDir, "dead-1.json", "/does/not/exist.jsonl");
 	const writeMem0 = vi.fn(async () => {});
-	const deps = { writeMem0, brainInboxDir: inbox, ledgerDir };
+	const writeMoneta = vi.fn(async () => {});
+	const deps = { writeMem0, writeMoneta, brainInboxDir: inbox, ledgerDir };
 
 	const res = await drainQueue(queueDir, deadDir, deps);
 

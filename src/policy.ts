@@ -1,6 +1,6 @@
 import type { Learning } from "./types.js";
 
-export type Target = "mem0" | "brain";
+export type Target = "mem0" | "brain" | "moneta";
 
 const MIN_CONFIDENCE = 0.6;
 
@@ -27,9 +27,13 @@ export function route(learning: Learning): Target[] {
 	if (learning.confidence < MIN_CONFIDENCE) return [];
 
 	const targets: Target[] = [];
-	// Atomic current-state facts → mem0.
-	if (learning.kind === "fact" || learning.kind === "decision")
+	// Atomic current-state facts → mem0. Phase-1 dual-write: everything that
+	// goes to mem0 ALSO goes to moneta (mem.nwlnexus.io). A later phase drops
+	// mem0; until then keep these two pushes in lockstep.
+	if (learning.kind === "fact" || learning.kind === "decision") {
 		targets.push("mem0");
+		targets.push("moneta");
+	}
 	// Durable, distilled truth → second-brain.
 	if (learning.kind === "decision" || learning.kind === "lesson")
 		targets.push("brain");
