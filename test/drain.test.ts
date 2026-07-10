@@ -1,8 +1,20 @@
-import { existsSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdtempSync,
+	readdirSync,
+	rmSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { expect, test, vi } from "vitest";
-import { drainQueue } from "../src/cli.js";
+import {
+	acquireDrainLock,
+	drainQueue,
+	isEntryClaimedByConcurrentDrain,
+	moveToDead,
+} from "../src/cli.js";
 
 const HEALTHY_TRANSCRIPT = resolve("test/fixtures/session-basic.jsonl");
 
@@ -85,4 +97,100 @@ test("healthy entry is drained and removed from queue (regression)", async () =>
 	expect(readdirSync(queueDir)).toEqual([]);
 	expect(writeMem0).toHaveBeenCalledOnce();
 	expect(existsSync(deadDir)).toBe(false);
+});
+
+// --- concurrent-drain race tolerance -------------------------------------
+
+test("moveToDead: source already gone (claimed by a concurrent drain) returns false and does not throw", () => {
+	const { queueDir, deadDir } = makeDirs();
+	const missing = join(queueDir, "already-gone.json");
+
+	expect(() => moveToDead(missing, deadDir, "already-gone.json")).not.toThrow();
+	expect(moveToDead(missing, deadDir, "already-gone.json")).toBe(false);
+	expect(readdirSync(deadDir)).toEqual([]);
+});
+
+test("moveToDead: normal case still moves the file and returns true", () => {
+	const { queueDir, deadDir } = makeDirs();
+	writeEntry(queueDir, "dead-1.json", "/does/not/exist.jsonl");
+	const p = join(queueDir, "dead-1.json");
+
+	expect(moveToDead(p, deadDir, "dead-1.json")).toBe(true);
+	expect(readdirSync(deadDir)).toEqual(["dead-1.json"]);
+});
+
+test("success path: rm tolerates the entry already being removed by a concurrent drain", async () => {
+	const { queueDir, deadDir, inbox, ledgerDir } = makeDirs();
+	writeEntry(queueDir, "healthy-1.json", HEALTHY_TRANSCRIPT);
+	const p = join(queueDir, "healthy-1.json");
+	// Simulate another drain claiming (and removing) this entry while this
+	// drain's writeMem0 call is in flight.
+	const writeMem0 = vi.fn(async () => {
+		rmSync(p, { force: true });
+	});
+	const deps = factDeps(writeMem0, { brainInboxDir: inbox, ledgerDir });
+
+	const res = await drainQueue(queueDir, deadDir, deps);
+
+	expect(res).toEqual({ drained: 1, dead: 0, retried: 0 });
+	expect(existsSync(deadDir)).toBe(false);
+});
+
+test("isEntryClaimedByConcurrentDrain: true only for an ENOENT on the entry path itself", () => {
+	const entryPath = "/home/.claude/mnemosyne/queue/x.json";
+	const enoentOnEntry = Object.assign(new Error("ENOENT"), {
+		code: "ENOENT",
+		path: entryPath,
+	});
+	const enoentElsewhere = Object.assign(new Error("ENOENT"), {
+		code: "ENOENT",
+		path: "/tmp/some-transcript.jsonl",
+	});
+	const otherError = new Error("mem0 unreachable");
+
+	expect(isEntryClaimedByConcurrentDrain(enoentOnEntry, entryPath)).toBe(true);
+	expect(isEntryClaimedByConcurrentDrain(enoentElsewhere, entryPath)).toBe(
+		false,
+	);
+	expect(isEntryClaimedByConcurrentDrain(otherError, entryPath)).toBe(false);
+});
+
+test("missing transcript is still moved to dead/ (PermanentDrainError regression, unaffected by race tolerance)", async () => {
+	const { queueDir, deadDir, inbox, ledgerDir } = makeDirs();
+	writeEntry(queueDir, "dead-1.json", "/does/not/exist.jsonl");
+	const writeMem0 = vi.fn(async () => {});
+	const writeMoneta = vi.fn(async () => {});
+	const deps = { writeMem0, writeMoneta, brainInboxDir: inbox, ledgerDir };
+
+	const res = await drainQueue(queueDir, deadDir, deps);
+
+	expect(res).toEqual({ drained: 0, dead: 1, retried: 0 });
+	expect(readdirSync(deadDir)).toEqual(["dead-1.json"]);
+});
+
+// --- drain lock -----------------------------------------------------------
+
+test("acquireDrainLock: acquires when no lock exists", () => {
+	const home = mkdtempSync(join(tmpdir(), "home-"));
+
+	expect(acquireDrainLock(home)).toBe(true);
+	expect(existsSync(join(home, "drain.lock"))).toBe(true);
+	expect(readdirSync(join(home, "drain.lock")).includes("pid")).toBe(true);
+});
+
+test("acquireDrainLock: refuses when a fresh lock is already held", () => {
+	const home = mkdtempSync(join(tmpdir(), "home-"));
+	expect(acquireDrainLock(home)).toBe(true);
+
+	expect(acquireDrainLock(home)).toBe(false);
+});
+
+test("acquireDrainLock: takes over a stale (> 10 min old) lock", () => {
+	const home = mkdtempSync(join(tmpdir(), "home-"));
+	expect(acquireDrainLock(home)).toBe(true);
+	const lockDir = join(home, "drain.lock");
+	const old = new Date(Date.now() - 11 * 60 * 1000);
+	utimesSync(lockDir, old, old);
+
+	expect(acquireDrainLock(home)).toBe(true);
 });
