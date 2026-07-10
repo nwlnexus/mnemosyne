@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import {
 	existsSync,
 	mkdtempSync,
@@ -15,6 +16,14 @@ import {
 	isEntryClaimedByConcurrentDrain,
 	moveToDead,
 } from "../src/cli.js";
+
+// `statSync` is wrapped (not fully replaced) so every test still gets the
+// real filesystem; only the one `acquireDrainLock` race test below overrides
+// it for a single call via `mockImplementationOnce`.
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs")>();
+	return { ...actual, statSync: vi.fn(actual.statSync) };
+});
 
 const HEALTHY_TRANSCRIPT = resolve("test/fixtures/session-basic.jsonl");
 
@@ -191,6 +200,24 @@ test("acquireDrainLock: takes over a stale (> 10 min old) lock", () => {
 	const lockDir = join(home, "drain.lock");
 	const old = new Date(Date.now() - 11 * 60 * 1000);
 	utimesSync(lockDir, old, old);
+
+	expect(acquireDrainLock(home)).toBe(true);
+});
+
+test("acquireDrainLock: tolerates the lock vanishing between the failed take() and the stale-check stat", () => {
+	const home = mkdtempSync(join(tmpdir(), "home-"));
+	expect(acquireDrainLock(home)).toBe(true);
+	const lockDir = join(home, "drain.lock");
+
+	// Simulate the other drain releasing its lock in the window between our
+	// failed mkdirSync (EEXIST) and our statSync call: statSync throws ENOENT
+	// even though the directory is (about to be) gone for real, so remove it
+	// for real too — the subsequent take() retry inside acquireDrainLock must
+	// then succeed rather than the whole call throwing.
+	vi.mocked(fs.statSync).mockImplementationOnce(() => {
+		throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+	});
+	rmSync(lockDir, { recursive: true, force: true });
 
 	expect(acquireDrainLock(home)).toBe(true);
 });

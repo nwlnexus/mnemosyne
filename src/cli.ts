@@ -180,7 +180,15 @@ export function acquireDrainLock(home: string): boolean {
 	};
 	if (take()) return true;
 	// Lock exists — stale (crashed drain) or fresh (active drain)?
-	const ageMs = Date.now() - statSync(lockDir).mtimeMs;
+	let ageMs: number;
+	try {
+		ageMs = Date.now() - statSync(lockDir).mtimeMs;
+	} catch (err) {
+		// The lock vanished between our failed take() and this stat — the
+		// other drain just finished. Race for it again rather than crash.
+		if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return take();
+		throw err;
+	}
 	if (ageMs < STALE_LOCK_MS) return false;
 	rmSync(lockDir, { recursive: true, force: true });
 	return take();
