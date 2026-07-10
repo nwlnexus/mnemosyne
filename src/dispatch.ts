@@ -7,6 +7,7 @@ import type { Learning } from "./types.js";
 
 export type DispatchDeps = {
 	writeMem0: (json: string) => Promise<void>;
+	writeMoneta: (json: string) => Promise<void>;
 	brainInboxDir: string;
 	slugify?: (s: string) => string;
 };
@@ -33,6 +34,27 @@ function mem0Payload(l: Learning): string {
 			cwd: l.provenance.cwd,
 			ts: l.provenance.ts,
 		},
+	});
+}
+
+// Payload for moneta's POST /capture ({ content, tags, source }). Mirrors the
+// mem0 payload above: `content` carries the same learning text plus the
+// provenance mem0 keeps in metadata, and `tags` encodes the mnemosyne marker
+// plus the learning kind. moneta has no structured metadata field, so
+// provenance rides along in `content`.
+function monetaPayload(l: Learning): string {
+	const content = [
+		l.text,
+		"",
+		`kind: ${l.kind}`,
+		`session: ${l.provenance.session}`,
+		`cwd: ${l.provenance.cwd}`,
+		`ts: ${l.provenance.ts}`,
+	].join("\n");
+	return JSON.stringify({
+		content,
+		tags: ["mnemosyne", l.kind],
+		source: "mnemosyne",
 	});
 }
 
@@ -64,6 +86,7 @@ export async function dispatch(
 	const targets = route(l);
 	for (const t of targets) {
 		if (t === "mem0") await deps.writeMem0(mem0Payload(l));
+		if (t === "moneta") await deps.writeMoneta(monetaPayload(l));
 		if (t === "brain") {
 			const slug = slugify(l.title ?? l.text);
 			const hash = hashLearning(l).slice(0, 8);
