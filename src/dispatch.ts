@@ -37,24 +37,22 @@ function mem0Payload(l: Learning): string {
 	});
 }
 
-// Payload for moneta's POST /capture ({ content, tags, source }). Mirrors the
-// mem0 payload above: `content` carries the same learning text plus the
-// provenance mem0 keeps in metadata, and `tags` encodes the mnemosyne marker
-// plus the learning kind. moneta has no structured metadata field, so
-// provenance rides along in `content`.
+// Payload for moneta's POST /capture ({ content, tags, source, metadata }).
+// `content` is just the learning text — moneta embeds this, so provenance
+// must stay out of it to avoid diluting recall. Provenance instead rides in
+// `metadata` (stored + returned, never embedded; requires moneta >= v1.4.0).
+// `tags` encodes the mnemosyne marker plus the learning kind.
 function monetaPayload(l: Learning): string {
-	const content = [
-		l.text,
-		"",
-		`kind: ${l.kind}`,
-		`session: ${l.provenance.session}`,
-		`cwd: ${l.provenance.cwd}`,
-		`ts: ${l.provenance.ts}`,
-	].join("\n");
 	return JSON.stringify({
-		content,
+		content: l.text,
 		tags: ["mnemosyne", l.kind],
 		source: "mnemosyne",
+		metadata: {
+			kind: l.kind,
+			session: l.provenance.session,
+			cwd: l.provenance.cwd,
+			ts: l.provenance.ts,
+		},
 	});
 }
 
