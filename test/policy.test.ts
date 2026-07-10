@@ -30,6 +30,14 @@ test("isSecret flags token-shaped strings", () => {
 	expect(isSecret("see https://example.com/docs")).toBe(false);
 });
 
+test("route dual-writes moneta exactly wherever it writes mem0", () => {
+	for (const { kind, confidence, text } of golden) {
+		const l: Learning = { text, kind, confidence, provenance: prov };
+		const targets = route(l);
+		expect(targets.includes("moneta")).toBe(targets.includes("mem0"));
+	}
+});
+
 test("route drops a learning whose title is secret even if text is clean", () => {
 	const l: Learning = {
 		text: "rotated the database password",

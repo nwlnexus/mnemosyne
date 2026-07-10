@@ -3,13 +3,13 @@
 		"kind": "fact",
 		"confidence": 0.9,
 		"text": "PR #201 merged to main",
-		"expect": ["mem0"]
+		"expect": ["mem0", "moneta"]
 	},
 	{
 		"kind": "decision",
 		"confidence": 0.9,
 		"text": "chose D1 over Neon for cost",
-		"expect": ["mem0", "brain"]
+		"expect": ["mem0", "moneta", "brain"]
 	},
 	{
 		"kind": "lesson",
