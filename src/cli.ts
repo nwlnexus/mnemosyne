@@ -6,6 +6,8 @@ import {
 	readFileSync,
 	renameSync,
 	rmSync,
+	statSync,
+	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import { brainInboxDir as defaultInbox, mnemosyneHome } from "./config.js";
@@ -67,9 +69,42 @@ export async function drainOnce(
 export type DrainSummary = { drained: number; dead: number; retried: number };
 
 /**
+ * Move a dead-lettered queue entry into `deadDir`. Tolerant of the entry
+ * having already been claimed (and removed) by a concurrent drain between
+ * this drain reading it and attempting to dead-letter it: returns `false`
+ * instead of throwing when the source file is already gone.
+ */
+export function moveToDead(p: string, deadDir: string, f: string): boolean {
+	mkdirSync(deadDir, { recursive: true });
+	try {
+		renameSync(p, join(deadDir, f));
+		return true;
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return false;
+		throw err;
+	}
+}
+
+/**
+ * True when `err` is the ENOENT thrown by reading the queue entry itself
+ * (as opposed to, say, the session transcript it references) — i.e. a
+ * concurrent drain claimed and removed this entry between `readdirSync`
+ * listing it and this drain attempting to read it.
+ */
+export function isEntryClaimedByConcurrentDrain(
+	err: unknown,
+	entryPath: string,
+): boolean {
+	const e = err as NodeJS.ErrnoException;
+	return e?.code === "ENOENT" && e.path === entryPath;
+}
+
+/**
  * Drain every `*.json` entry in `queueDir`, classifying failures:
  *   - success            → entry removed from the queue;
  *   - PermanentDrainError → entry moved to `deadDir` (never requeued);
+ *   - claimed by a concurrent drain → skipped silently (breadcrumb only,
+ *     not counted as drained/dead/retried);
  *   - any other error     → entry left in the queue for the next drain (retry).
  * Every failure writes a `drain: <file> failed: <reason>` breadcrumb to stderr.
  */
@@ -84,13 +119,24 @@ export async function drainQueue(
 		const p = join(queueDir, f);
 		try {
 			await drainOnce(p, deps);
-			rmSync(p);
+			// force: another drain may have already removed this entry.
+			rmSync(p, { force: true });
 			summary.drained++;
 		} catch (err) {
+			if (isEntryClaimedByConcurrentDrain(err, p)) {
+				process.stderr.write(
+					`drain: ${f} already handled by a concurrent drain — skipping\n`,
+				);
+				continue;
+			}
 			const reason = err instanceof Error ? err.message : String(err);
 			if (err instanceof PermanentDrainError) {
-				mkdirSync(deadDir, { recursive: true });
-				renameSync(p, join(deadDir, f));
+				if (!moveToDead(p, deadDir, f)) {
+					process.stderr.write(
+						`drain: ${f} already handled by a concurrent drain — skipping\n`,
+					);
+					continue;
+				}
 				summary.dead++;
 				process.stderr.write(
 					`drain: ${f} failed: ${reason} (discarded to dead/)\n`,
@@ -107,24 +153,80 @@ export async function drainQueue(
 	return summary;
 }
 
+const STALE_LOCK_MS = 10 * 60 * 1000;
+
+/**
+ * Take an exclusive drain lock via atomic `mkdirSync` so concurrent drains
+ * (routine: the SessionStart hook backgrounds one on every session start)
+ * serialize instead of racing each other's queue/dead-letter operations.
+ *
+ * Returns `true` if the lock was acquired (caller must release it in a
+ * `finally`). Returns `false` if another drain currently holds a fresh
+ * (< 10 min old) lock — the caller should exit without draining. A lock
+ * older than that is assumed to be left behind by a crashed drain and is
+ * taken over.
+ */
+export function acquireDrainLock(home: string): boolean {
+	const lockDir = join(home, "drain.lock");
+	const take = (): boolean => {
+		try {
+			mkdirSync(lockDir);
+			writeFileSync(join(lockDir, "pid"), String(process.pid));
+			return true;
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException)?.code === "EEXIST") return false;
+			throw err;
+		}
+	};
+	if (take()) return true;
+	// Lock exists — stale (crashed drain) or fresh (active drain)?
+	let ageMs: number;
+	try {
+		ageMs = Date.now() - statSync(lockDir).mtimeMs;
+	} catch (err) {
+		// The lock vanished between our failed take() and this stat — the
+		// other drain just finished. Race for it again rather than crash.
+		if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return take();
+		throw err;
+	}
+	if (ageMs < STALE_LOCK_MS) return false;
+	rmSync(lockDir, { recursive: true, force: true });
+	return take();
+}
+
+/** Release the drain lock taken by {@link acquireDrainLock}. */
+export function releaseDrainLock(home: string): void {
+	rmSync(join(home, "drain.lock"), { recursive: true, force: true });
+}
+
 async function main(): Promise<void> {
 	const home = mnemosyneHome();
 	const queueDir = join(home, "queue");
 	const deadDir = join(home, "dead");
 	if (!existsSync(queueDir)) return;
-	const { spawnMem0Add } = await import("./mem0Writer.js");
-	const { writeMoneta, replayOutbox } = await import("./monetaWriter.js");
-	const deps: DrainDeps = {
-		writeMem0: spawnMem0Add,
-		writeMoneta,
-		brainInboxDir: defaultInbox(),
-		ledgerDir: join(home, "processed"),
-	};
-	await drainQueue(queueDir, deadDir, deps);
-	// Retry any captures that previously failed and were spooled. Deletes a
-	// spool file only on confirmed 2xx; a still-failing capture stays for the
-	// next drain (moneta dedupes server-side, so re-posts are safe).
-	await replayOutbox();
+	// The SessionStart hook backgrounds a drain on every session start, so
+	// concurrent drains are routine — serialize on a lock instead of racing.
+	if (!acquireDrainLock(home)) {
+		process.stderr.write("drain: another drain is active — exiting\n");
+		return;
+	}
+	try {
+		const { spawnMem0Add } = await import("./mem0Writer.js");
+		const { writeMoneta, replayOutbox } = await import("./monetaWriter.js");
+		const deps: DrainDeps = {
+			writeMem0: spawnMem0Add,
+			writeMoneta,
+			brainInboxDir: defaultInbox(),
+			ledgerDir: join(home, "processed"),
+		};
+		await drainQueue(queueDir, deadDir, deps);
+		// Retry any captures that previously failed and were spooled. Deletes a
+		// spool file only on confirmed 2xx; a still-failing capture stays for
+		// the next drain (moneta dedupes server-side, so re-posts are safe).
+		await replayOutbox();
+	} finally {
+		releaseDrainLock(home);
+	}
 }
 
 if (process.argv[2] === "drain") void main();
