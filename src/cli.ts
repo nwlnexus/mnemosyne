@@ -20,6 +20,7 @@ import type { Provenance } from "./types.js";
 export type DrainDeps = {
 	llm?: LLMDeps;
 	writeMem0: (json: string) => Promise<void>;
+	writeMoneta: (json: string) => Promise<void>;
 	brainInboxDir: string;
 	ledgerDir: string;
 };
@@ -54,6 +55,7 @@ export async function drainOnce(
 		}
 		const targets = await dispatch(l, {
 			writeMem0: deps.writeMem0,
+			writeMoneta: deps.writeMoneta,
 			brainInboxDir: deps.brainInboxDir,
 		});
 		ledger.add(h);
@@ -111,12 +113,18 @@ async function main(): Promise<void> {
 	const deadDir = join(home, "dead");
 	if (!existsSync(queueDir)) return;
 	const { spawnMem0Add } = await import("./mem0Writer.js");
+	const { writeMoneta, replayOutbox } = await import("./monetaWriter.js");
 	const deps: DrainDeps = {
 		writeMem0: spawnMem0Add,
+		writeMoneta,
 		brainInboxDir: defaultInbox(),
 		ledgerDir: join(home, "processed"),
 	};
 	await drainQueue(queueDir, deadDir, deps);
+	// Retry any captures that previously failed and were spooled. Deletes a
+	// spool file only on confirmed 2xx; a still-failing capture stays for the
+	// next drain (moneta dedupes server-side, so re-posts are safe).
+	await replayOutbox();
 }
 
 if (process.argv[2] === "drain") void main();
