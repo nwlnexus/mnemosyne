@@ -37,6 +37,18 @@ function resolveToken(): string | null {
 	}
 }
 
+// Cloudflare Access Service Auth (required at the edge once moneta-access is
+// live). nix-darwin-hm provisions CF_ACCESS_CLIENT_ID/SECRET from 1Password.
+function resolveAccessHeaders(): Record<string, string> {
+	const id = process.env.CF_ACCESS_CLIENT_ID?.trim();
+	const secret = process.env.CF_ACCESS_CLIENT_SECRET?.trim();
+	if (!id || !secret) return {};
+	return {
+		"CF-Access-Client-Id": id,
+		"CF-Access-Client-Secret": secret,
+	};
+}
+
 export function monetaOutboxDir(): string {
 	const home =
 		process.env.MNEMOSYNE_HOME ?? join(homedir(), ".claude", "mnemosyne");
@@ -55,6 +67,7 @@ export async function postCapture(json: string): Promise<boolean> {
 			headers: {
 				"content-type": "application/json",
 				authorization: `Bearer ${token}`,
+				...resolveAccessHeaders(),
 			},
 			body: json,
 		});

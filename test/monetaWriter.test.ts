@@ -16,6 +16,8 @@ const ENV_KEYS = [
 	"MONETA_URL",
 	"MONETA_AUTH_TOKEN",
 	"MONETA_TOKEN_FILE",
+	"CF_ACCESS_CLIENT_ID",
+	"CF_ACCESS_CLIENT_SECRET",
 ];
 const saved: Record<string, string | undefined> = {};
 
@@ -42,6 +44,8 @@ beforeEach(() => {
 	process.env.MNEMOSYNE_HOME = home;
 	process.env.MONETA_URL = "https://moneta.test";
 	process.env.MONETA_AUTH_TOKEN = "tok-123";
+	process.env.CF_ACCESS_CLIENT_ID = "cf-id";
+	process.env.CF_ACCESS_CLIENT_SECRET = "cf-secret";
 	// point token-file resolution somewhere that does not exist by default
 	process.env.MONETA_TOKEN_FILE = join(home, "no-such-token");
 });
@@ -70,6 +74,8 @@ test("writeMoneta posts to /capture with a Bearer header on success", async () =
 	expect(url).toBe("https://moneta.test/capture");
 	expect(init.method).toBe("POST");
 	expect(init.headers.authorization).toBe("Bearer tok-123");
+	expect(init.headers["CF-Access-Client-Id"]).toBe("cf-id");
+	expect(init.headers["CF-Access-Client-Secret"]).toBe("cf-secret");
 	expect(init.body).toBe(json);
 	// nothing spooled on success
 	expect(outboxFiles(process.env.MNEMOSYNE_HOME as string)).toHaveLength(0);
