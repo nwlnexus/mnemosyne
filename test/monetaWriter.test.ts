@@ -179,3 +179,48 @@ test("replayOutbox keeps a spooled file when the post fails", async () => {
 	await replayOutbox(); // still failing
 	expect(readdirSync(dir)).toHaveLength(1);
 });
+
+// Emulates undici's default redirect handling at the mock layer: a CF
+// Access-style 302 (expired/invalid service token) is transparently followed
+// to the login page — a 200 text/html — unless the caller opts out with
+// redirect:"manual". This is the production trap: the followed login page's
+// 200 read as success and outbox files were silently deleted.
+function accessRedirectFetch() {
+	return vi.fn(async (_url: unknown, init?: RequestInit) =>
+		init?.redirect === "manual"
+			? new Response(null, {
+					status: 302,
+					headers: {
+						location:
+							"https://nwlnexus.cloudflareaccess.com/cdn-cgi/access/login",
+					},
+				})
+			: new Response("<html>Cloudflare Access login</html>", {
+					status: 200,
+					headers: { "content-type": "text/html" },
+				}),
+	);
+}
+
+test("writeMoneta spools when CF Access answers with a login redirect", async () => {
+	const dir = outbox(process.env.MNEMOSYNE_HOME as string);
+	vi.stubGlobal("fetch", accessRedirectFetch());
+	await writeMoneta('{"content":"behind-expired-token"}');
+	expect(readdirSync(dir)).toHaveLength(1);
+});
+
+test("replayOutbox keeps spooled files when CF Access answers with a login redirect", async () => {
+	const dir = outbox(process.env.MNEMOSYNE_HOME as string);
+	// spool one entry while the service is down
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async () => new Response("nope", { status: 500 })),
+	);
+	await writeMoneta('{"content":"spooled-while-down"}');
+	expect(readdirSync(dir)).toHaveLength(1);
+
+	// service now "answers" — but it's the Access login redirect, not moneta
+	vi.stubGlobal("fetch", accessRedirectFetch());
+	await replayOutbox();
+	expect(readdirSync(dir)).toHaveLength(1);
+});

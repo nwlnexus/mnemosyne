@@ -70,6 +70,12 @@ export async function postCapture(json: string): Promise<boolean> {
 				...resolveAccessHeaders(),
 			},
 			body: json,
+			// NEVER follow redirects: when the CF Access service token is
+			// invalid/expired, the edge 302s to the Access login page, and a
+			// followed redirect lands on that page's 200 — which read as success
+			// and silently deleted outbox files. Manual mode surfaces the 302
+			// itself, so res.ok is false and the capture stays spooled.
+			redirect: "manual",
 		});
 		return res.ok;
 	} catch {
