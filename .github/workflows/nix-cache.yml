@@ -57,6 +57,19 @@ jobs:
           AWS_SECRET_ACCESS_KEY: op://Dev/nwlnexus-nix-cache/secret-access-key
           NIX_CACHE_SECRET_KEY: op://Dev/nwlnexus-nix-cache/nix-signing-key
 
+      - name: Provide R2 credentials to the nix-daemon
+        # Substitution runs inside the nix-daemon (root), which cannot see
+        # this job's AWS_* env vars — without this it falls back to IMDS,
+        # fails auth, and silently skips the R2 substituter (observed:
+        # "Valid credentials could not be sourced by the IMDS provider").
+        if: env.HAS_OP_TOKEN == 'true'
+        run: |
+          sudo mkdir -p /var/root/.aws
+          umask 077
+          printf '[default]\naws_access_key_id = %s\naws_secret_access_key = %s\n' \
+            "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" | sudo tee /var/root/.aws/credentials >/dev/null
+          sudo chmod 600 /var/root/.aws/credentials
+
       - name: Build
         id: build
         # Substitute from the R2 cache when creds are available. This is
