@@ -219,11 +219,17 @@ async function main(): Promise<void> {
 			brainInboxDir: defaultInbox(),
 			ledgerDir: join(home, "processed"),
 		};
-		await drainQueue(queueDir, deadDir, deps);
+		const queue = await drainQueue(queueDir, deadDir, deps);
 		// Retry any captures that previously failed and were spooled. Deletes a
 		// spool file only on confirmed 2xx; a still-failing capture stays for
 		// the next drain (moneta dedupes server-side, so re-posts are safe).
-		await replayOutbox();
+		const outbox = await replayOutbox();
+		// One summary line per drain (stderr, same stream as the failure
+		// breadcrumbs, so drain.log tells the whole story).
+		process.stderr.write(
+			`drain: queue drained=${queue.drained} dead=${queue.dead} retried=${queue.retried}; ` +
+				`moneta-outbox replayed=${outbox.replayed} kept=${outbox.kept}\n`,
+		);
 	} finally {
 		releaseDrainLock(home);
 	}

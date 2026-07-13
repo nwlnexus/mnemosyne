@@ -221,6 +221,21 @@ test("replayOutbox keeps spooled files when CF Access answers with a login redir
 
 	// service now "answers" — but it's the Access login redirect, not moneta
 	vi.stubGlobal("fetch", accessRedirectFetch());
-	await replayOutbox();
+	expect(await replayOutbox()).toEqual({ replayed: 0, kept: 1 });
 	expect(readdirSync(dir)).toHaveLength(1);
+});
+
+test("replayOutbox reports how many files it replayed vs kept", async () => {
+	const dir = outbox(process.env.MNEMOSYNE_HOME as string);
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async () => new Response("nope", { status: 500 })),
+	);
+	await writeMoneta('{"content":"a"}');
+	await writeMoneta('{"content":"b"}');
+	expect(readdirSync(dir)).toHaveLength(2);
+
+	vi.stubGlobal("fetch", okFetch());
+	expect(await replayOutbox()).toEqual({ replayed: 2, kept: 0 });
+	expect(readdirSync(dir)).toHaveLength(0);
 });
