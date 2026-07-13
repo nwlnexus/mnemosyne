@@ -99,15 +99,19 @@ export async function writeMoneta(json: string): Promise<void> {
 	spool(json);
 }
 
+export type ReplaySummary = { replayed: number; kept: number };
+
 // Replay spooled captures. Delete a file ONLY on a confirmed 2xx; leave it
 // otherwise (idempotent + fail-safe — moneta dedupes server-side, so a
-// re-post of an already-stored capture is harmless).
-export async function replayOutbox(): Promise<void> {
+// re-post of an already-stored capture is harmless). Returns how many files
+// were delivered-and-removed vs kept for the next drain.
+export async function replayOutbox(): Promise<ReplaySummary> {
+	const summary: ReplaySummary = { replayed: 0, kept: 0 };
 	let files: string[];
 	try {
 		files = readdirSync(monetaOutboxDir()).filter((n) => n.endsWith(".json"));
 	} catch {
-		return; // no outbox yet → nothing to replay
+		return summary; // no outbox yet → nothing to replay
 	}
 	for (const f of files) {
 		const p = join(monetaOutboxDir(), f);
@@ -117,6 +121,12 @@ export async function replayOutbox(): Promise<void> {
 		} catch {
 			continue;
 		}
-		if (await postCapture(json)) rmSync(p);
+		if (await postCapture(json)) {
+			rmSync(p);
+			summary.replayed++;
+		} else {
+			summary.kept++;
+		}
 	}
+	return summary;
 }
