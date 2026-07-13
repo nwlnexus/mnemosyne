@@ -38,8 +38,24 @@ jobs:
 
       - name: Build
         id: build
+        # Substitute from the R2 cache when secrets are available. This is
+        # load-bearing, not just a speedup: the pnpm-deps FOD gets SIGKILLed
+        # on 7GB macos-15 runners (memory), so the runner must substitute the
+        # locally-seeded pnpm-deps instead of running pnpm itself. FOD output
+        # paths depend only on name+hash, so locally-pushed paths match.
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: |
-          out=$(nix build .# --print-out-paths)
+          opts=()
+          if [ -n "$R2_ACCOUNT_ID" ]; then
+            opts+=(
+              --option extra-substituters "s3://nwlnexus-nix-cache?endpoint=https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com&region=auto"
+              --option extra-trusted-public-keys "nix-cache.nwlnexus.io-1:ioP2I0gXFUjZyoPkhHPq2Xqi93zkgIv9VSA+BmGE5I0="
+            )
+          fi
+          out=$(nix build .# --print-out-paths "${opts[@]}")
           echo "out=$out" >> "$GITHUB_OUTPUT"
 
       - name: Sign and push closure to R2
