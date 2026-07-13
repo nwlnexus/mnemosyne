@@ -1,0 +1,54 @@
+# Build the flake package and publish its signed closure to the nwlnexus R2
+# nix binary cache, so consumers (nix-darwin-hm hosts) substitute a prebuilt
+# binary instead of running the pnpm build locally on every darwin-rebuild.
+#
+# Secrets:
+#   NIX_CACHE_SECRET_KEY   nix signing key (pair of nix-cache.nwlnexus.io-1
+#                          in nix-darwin-hm's extra-trusted-public-keys)
+#   R2_ACCOUNT_ID          Cloudflare account id (personal/nwlnexus account)
+#   R2_ACCESS_KEY_ID       R2 S3 API token key id (Object Read & Write on
+#   R2_SECRET_ACCESS_KEY   the nwlnexus-nix-cache bucket)
+name: nix-cache
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    # macos-15 runners are aarch64-darwin — the system every consumer host
+    # runs. Add an ubuntu-24.04-arm entry here if the nixos-arm hosts ever
+    # consume mnemosyne from the cache too.
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@v16
+
+      - name: Build
+        id: build
+        run: |
+          out=$(nix build .# --print-out-paths)
+          echo "out=$out" >> "$GITHUB_OUTPUT"
+
+      - name: Sign and push closure to R2
+        # Cache pushes only from main: PR builds verify buildability without
+        # touching secrets or publishing unreviewed artifacts.
+        if: github.event_name != 'pull_request'
+        env:
+          OUT: ${{ steps.build.outputs.out }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          NIX_CACHE_SECRET_KEY: ${{ secrets.NIX_CACHE_SECRET_KEY }}
+        run: |
+          umask 077
+          printf '%s' "$NIX_CACHE_SECRET_KEY" > /tmp/cache-key.sec
+          nix store sign --key-file /tmp/cache-key.sec --recursive "$OUT"
+          nix copy --to "s3://nwlnexus-nix-cache?endpoint=https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com&region=auto&compression=zstd" "$OUT"
+          rm -f /tmp/cache-key.sec
+          echo "pushed $OUT"
