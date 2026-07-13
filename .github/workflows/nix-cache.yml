@@ -27,6 +27,9 @@ jobs:
     runs-on: macos-15
     permissions:
       contents: read
+    env:
+      # secrets.* is not allowed in step-level `if:`; surface presence here.
+      HAS_OP_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -43,7 +46,7 @@ jobs:
         # Fork PRs get no secrets; same-repo PRs and main pushes do. Guarded
         # so a fork PR still runs the build (it will just lack the R2
         # substituter and may trip the runner's pnpm memory kill — see below).
-        if: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN != '' }}
+        if: env.HAS_OP_TOKEN == 'true'
         uses: 1password/load-secrets-action@v2
         with:
           export-env: true
