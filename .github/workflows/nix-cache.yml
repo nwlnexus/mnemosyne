@@ -28,6 +28,13 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: DeterminateSystems/nix-installer-action@v16
+        with:
+          # Determinate Nix enables the darwin seatbelt sandbox by default;
+          # the pnpm-deps FOD gets SIGKILLed inside it on macos-15 runners
+          # (3/3 runs: `pnpm install ... Killed: 9`). Local builds run
+          # upstream nix with sandboxing off and build the same drv fine.
+          extra-conf: |
+            sandbox = false
 
       - name: Build
         id: build
