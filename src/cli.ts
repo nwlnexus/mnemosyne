@@ -209,7 +209,9 @@ async function main(): Promise<void> {
 		return;
 	}
 	try {
-		const { writeMoneta, replayOutbox } = await import("./monetaWriter.js");
+		const { writeMoneta, replayOutbox, replayLegacyOutbox } = await import(
+			"./monetaWriter.js"
+		);
 		const deps: DrainDeps = {
 			writeMoneta,
 			brainInboxDir: defaultInbox(),
@@ -220,11 +222,16 @@ async function main(): Promise<void> {
 		// spool file only on confirmed 2xx; a still-failing capture stays for
 		// the next drain (moneta dedupes server-side, so re-posts are safe).
 		const outbox = await replayOutbox();
+		// Also migrate anything still spooled in the legacy mem0 outbox —
+		// converted to moneta captures, same 2xx-or-keep contract. No-op once
+		// the directory is empty or gone.
+		const legacy = await replayLegacyOutbox();
 		// One summary line per drain (stderr, same stream as the failure
 		// breadcrumbs, so drain.log tells the whole story).
 		process.stderr.write(
 			`drain: queue drained=${queue.drained} dead=${queue.dead} retried=${queue.retried}; ` +
-				`moneta-outbox replayed=${outbox.replayed} kept=${outbox.kept}\n`,
+				`moneta-outbox replayed=${outbox.replayed} kept=${outbox.kept}; ` +
+				`legacy-outbox replayed=${legacy.replayed} kept=${legacy.kept} skipped=${legacy.skipped}\n`,
 		);
 	} finally {
 		releaseDrainLock(home);

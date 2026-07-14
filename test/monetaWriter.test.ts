@@ -1,5 +1,6 @@
 import {
 	existsSync,
+	mkdirSync,
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
@@ -8,7 +9,11 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { replayOutbox, writeMoneta } from "../src/monetaWriter.js";
+import {
+	replayLegacyOutbox,
+	replayOutbox,
+	writeMoneta,
+} from "../src/monetaWriter.js";
 
 // Env keys this suite mutates; snapshot + restore so tests stay isolated.
 const ENV_KEYS = [
@@ -238,4 +243,94 @@ test("replayOutbox reports how many files it replayed vs kept", async () => {
 	vi.stubGlobal("fetch", okFetch());
 	expect(await replayOutbox()).toEqual({ replayed: 2, kept: 0 });
 	expect(readdirSync(dir)).toHaveLength(0);
+});
+
+// --- legacy mem0 outbox migration -----------------------------------------
+// Entries spooled before the mem0 retirement are mem0-API-shaped. They drain
+// through the same confirmed-2xx-or-keep contract, converted to moneta
+// captures. A missing/empty legacy outbox is a no-op — machines that never
+// ran the dual-write (or already migrated) pay nothing.
+
+function legacyDir(home: string): string {
+	return join(home, "outbox");
+}
+
+function writeLegacy(home: string, name: string, payload: unknown): void {
+	mkdirSync(legacyDir(home), { recursive: true });
+	writeFileSync(join(legacyDir(home), name), JSON.stringify(payload));
+}
+
+test("replayLegacyOutbox converts a mem0 payload into a moneta capture", async () => {
+	const home = process.env.MNEMOSYNE_HOME as string;
+	writeLegacy(home, "a.json", {
+		user_id: "mnemosyne",
+		text: "chose D1 over Neon",
+		infer: false,
+		app: "claude-code",
+		metadata: { kind: "decision", session: "s1", cwd: "/repo", ts: "t1" },
+	});
+	const fetchMock = okFetch();
+	vi.stubGlobal("fetch", fetchMock);
+
+	expect(await replayLegacyOutbox()).toEqual({
+		replayed: 1,
+		kept: 0,
+		skipped: 0,
+	});
+	expect(readdirSync(legacyDir(home))).toHaveLength(0);
+	const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+	expect(body).toEqual({
+		content: "chose D1 over Neon",
+		tags: ["mnemosyne", "decision"],
+		source: "mnemosyne",
+		metadata: { kind: "decision", session: "s1", cwd: "/repo", ts: "t1" },
+	});
+});
+
+test("replayLegacyOutbox tolerates minimal payloads without metadata", async () => {
+	const home = process.env.MNEMOSYNE_HOME as string;
+	writeLegacy(home, "min.json", { user_id: "mnemosyne", text: "queued" });
+	const fetchMock = okFetch();
+	vi.stubGlobal("fetch", fetchMock);
+
+	expect(await replayLegacyOutbox()).toEqual({
+		replayed: 1,
+		kept: 0,
+		skipped: 0,
+	});
+	const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+	expect(body.tags).toEqual(["mnemosyne"]);
+	expect(body.metadata).toEqual({});
+});
+
+test("replayLegacyOutbox keeps entries on failure and skips malformed ones", async () => {
+	const home = process.env.MNEMOSYNE_HOME as string;
+	writeLegacy(home, "good.json", { user_id: "m", text: "still down" });
+	writeFileSync(join(legacyDir(home), "junk.json"), "not json at all");
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async () => new Response("nope", { status: 500 })),
+	);
+
+	expect(await replayLegacyOutbox()).toEqual({
+		replayed: 0,
+		kept: 1,
+		skipped: 1,
+	});
+	expect(readdirSync(legacyDir(home)).sort()).toEqual([
+		"good.json",
+		"junk.json",
+	]);
+});
+
+test("replayLegacyOutbox no-ops when the legacy outbox does not exist", async () => {
+	const fetchMock = okFetch();
+	vi.stubGlobal("fetch", fetchMock);
+
+	expect(await replayLegacyOutbox()).toEqual({
+		replayed: 0,
+		kept: 0,
+		skipped: 0,
+	});
+	expect(fetchMock).not.toHaveBeenCalled();
 });

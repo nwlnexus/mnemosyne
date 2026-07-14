@@ -130,3 +130,75 @@ export async function replayOutbox(): Promise<ReplaySummary> {
 	}
 	return summary;
 }
+
+// --- legacy mem0 outbox migration -----------------------------------------
+
+function legacyOutboxDir(): string {
+	const home =
+		process.env.MNEMOSYNE_HOME ?? join(homedir(), ".claude", "mnemosyne");
+	return join(home, "outbox");
+}
+
+// Entries spooled before the mem0 retirement are mem0-API-shaped
+// ({ user_id, text, infer, app, metadata }). Convert to a moneta capture, or
+// null when the entry has no usable text (malformed JSON, empty text) — those
+// can never succeed and are counted as skipped rather than retried forever.
+function convertLegacyPayload(raw: string): string | null {
+	try {
+		const o = JSON.parse(raw) as {
+			text?: unknown;
+			metadata?: Record<string, unknown>;
+		};
+		const text = typeof o.text === "string" && o.text.trim() ? o.text : null;
+		if (!text) return null;
+		const metadata =
+			o.metadata && typeof o.metadata === "object" ? o.metadata : {};
+		const kind = metadata.kind;
+		const tags = ["mnemosyne", ...(typeof kind === "string" ? [kind] : [])];
+		return JSON.stringify({
+			content: text,
+			tags,
+			source: "mnemosyne",
+			metadata,
+		});
+	} catch {
+		return null;
+	}
+}
+
+export type LegacyReplaySummary = ReplaySummary & { skipped: number };
+
+// Drain the legacy mem0 outbox into moneta under the same
+// confirmed-2xx-or-keep contract as replayOutbox. No-op when the directory
+// does not exist — hosts that never dual-wrote (or finished migrating and
+// deleted it) pay nothing.
+export async function replayLegacyOutbox(): Promise<LegacyReplaySummary> {
+	const summary: LegacyReplaySummary = { replayed: 0, kept: 0, skipped: 0 };
+	let files: string[];
+	try {
+		files = readdirSync(legacyOutboxDir()).filter((n) => n.endsWith(".json"));
+	} catch {
+		return summary;
+	}
+	for (const f of files) {
+		const p = join(legacyOutboxDir(), f);
+		let raw: string;
+		try {
+			raw = readFileSync(p, "utf8");
+		} catch {
+			continue;
+		}
+		const capture = convertLegacyPayload(raw);
+		if (capture === null) {
+			summary.skipped++;
+			continue;
+		}
+		if (await postCapture(capture)) {
+			rmSync(p);
+			summary.replayed++;
+		} else {
+			summary.kept++;
+		}
+	}
+	return summary;
+}
