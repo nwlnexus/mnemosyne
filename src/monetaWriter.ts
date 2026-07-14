@@ -8,6 +8,8 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { PermanentDrainError } from "./errors.js";
+import type { Turn } from "./types.js";
 
 // moneta is olympus's memory Worker. This writer POSTs learnings to its
 // /capture endpoint and is FAIL-OPEN: any failure spools
@@ -81,6 +83,105 @@ export async function postCapture(json: string): Promise<boolean> {
 	} catch {
 		return false;
 	}
+}
+
+// ─── capture-session (server-side extraction) ───────────────────────────────
+// moneta's /capture-session endpoint does ALL extraction/embedding: mnemosyne
+// just POSTs the raw transcript turns and moneta returns the learnings it
+// derived (and, for each, whether/why it stored to moneta). Unlike
+// writeMoneta/postCapture this is NOT fail-open — the queue entry on disk is
+// the durable store, so a failure here must throw and let drainQueue decide
+// whether to dead-letter (permanent) or leave the entry queued (transient).
+
+export type SessionLearningKind = "fact" | "decision" | "lesson" | "noise";
+
+export type SessionLearningReason =
+	| "kind_not_routed_to_moneta"
+	| "below_min_confidence"
+	| "secret_detected"
+	| "duplicate_blocked"
+	| "capture_failed";
+
+export type SessionLearning = {
+	text: string;
+	kind: SessionLearningKind;
+	confidence: number;
+	title?: string;
+	stored: boolean;
+	id?: string;
+	captureStatus?: string;
+	reason?: SessionLearningReason;
+};
+
+export type CaptureSessionPayload = {
+	turns: Turn[];
+	session: string;
+	cwd: string;
+	ts: string;
+	source?: string;
+	tags?: string[];
+	force?: boolean;
+};
+
+export type SessionCaptureResult = {
+	status: "captured" | "already_captured";
+	learnings: SessionLearning[];
+};
+
+export async function captureSession(
+	payload: CaptureSessionPayload,
+): Promise<SessionCaptureResult> {
+	const token = resolveToken();
+	if (!token) {
+		// Transient: no token resolvable yet (e.g. not provisioned). Leave the
+		// entry queued rather than dead-lettering — it may resolve later.
+		throw new Error("moneta capture-session: no auth token resolved");
+	}
+	let res: Response;
+	try {
+		res = await fetch(`${monetaUrl()}/capture-session`, {
+			method: "POST",
+			headers: {
+				"content-type": "application/json",
+				authorization: `Bearer ${token}`,
+				...resolveAccessHeaders(),
+			},
+			body: JSON.stringify(payload),
+			// See postCapture: never follow redirects (CF Access login trap).
+			redirect: "manual",
+		});
+	} catch (err) {
+		throw new Error(
+			`moneta capture-session: network error: ${err instanceof Error ? err.message : String(err)}`,
+		);
+	}
+	// Malformed/oversized request bodies can never succeed on retry.
+	if (res.status === 400 || res.status === 413) {
+		throw new PermanentDrainError(
+			`moneta capture-session rejected the request (${res.status})`,
+		);
+	}
+	// Auth failures, extraction failures (502), and anything else unexpected
+	// are transient — leave the entry queued for the next drain.
+	if (!res.ok) {
+		throw new Error(`moneta capture-session failed: ${res.status}`);
+	}
+	let data: { ok?: boolean; status?: unknown; learnings?: unknown };
+	try {
+		data = (await res.json()) as typeof data;
+	} catch (err) {
+		throw new Error(
+			`moneta capture-session: failed to parse response: ${err instanceof Error ? err.message : String(err)}`,
+		);
+	}
+	if (!data.ok || !Array.isArray(data.learnings)) {
+		throw new Error("moneta capture-session: unexpected response shape");
+	}
+	return {
+		status:
+			data.status === "already_captured" ? "already_captured" : "captured",
+		learnings: data.learnings as SessionLearning[],
+	};
 }
 
 function spool(json: string): void {

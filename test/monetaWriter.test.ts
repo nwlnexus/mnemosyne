@@ -9,7 +9,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { PermanentDrainError } from "../src/errors.js";
 import {
+	captureSession,
 	replayLegacyOutbox,
 	replayOutbox,
 	writeMoneta,
@@ -333,4 +335,174 @@ test("replayLegacyOutbox no-ops when the legacy outbox does not exist", async ()
 		skipped: 0,
 	});
 	expect(fetchMock).not.toHaveBeenCalled();
+});
+
+// --- captureSession --------------------------------------------------------
+// Unlike writeMoneta/postCapture this is NOT fail-open: the queue entry on
+// disk is the durable store, so captureSession must throw on failure and let
+// drainQueue classify permanent (dead-letter) vs transient (retry).
+
+const CAPTURE_SESSION_PAYLOAD = {
+	turns: [{ role: "user" as const, text: "hi" }],
+	session: "s1",
+	cwd: "/repo",
+	ts: "2026-07-05T00:00:00Z",
+	source: "mnemosyne",
+};
+
+test("captureSession posts to /capture-session with a Bearer header and parses learnings on 2xx", async () => {
+	const fetchMock = vi.fn(
+		async () =>
+			new Response(
+				JSON.stringify({
+					ok: true,
+					session: "s1",
+					status: "captured",
+					extracted: 1,
+					learnings: [
+						{
+							text: "PR #201 merged",
+							kind: "fact",
+							confidence: 0.9,
+							stored: true,
+							id: "abc",
+						},
+					],
+				}),
+				{ status: 200 },
+			),
+	);
+	vi.stubGlobal("fetch", fetchMock);
+
+	const result = await captureSession(CAPTURE_SESSION_PAYLOAD);
+
+	expect(fetchMock).toHaveBeenCalledOnce();
+	const [url, init] = fetchMock.mock.calls[0];
+	expect(url).toBe("https://moneta.test/capture-session");
+	expect(init.method).toBe("POST");
+	expect(init.headers.authorization).toBe("Bearer tok-123");
+	expect(init.redirect).toBe("manual");
+	expect(JSON.parse(init.body)).toEqual(CAPTURE_SESSION_PAYLOAD);
+	expect(result).toEqual({
+		status: "captured",
+		learnings: [
+			{
+				text: "PR #201 merged",
+				kind: "fact",
+				confidence: 0.9,
+				stored: true,
+				id: "abc",
+			},
+		],
+	});
+});
+
+test("captureSession treats already_captured as a normal 2xx result", async () => {
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({
+						ok: true,
+						status: "already_captured",
+						learnings: [],
+					}),
+					{ status: 200 },
+				),
+		),
+	);
+
+	expect(await captureSession(CAPTURE_SESSION_PAYLOAD)).toEqual({
+		status: "already_captured",
+		learnings: [],
+	});
+});
+
+test("captureSession throws PermanentDrainError on 400 (malformed body)", async () => {
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(
+			async () => new Response('{"ok":false,"error":"bad"}', { status: 400 }),
+		),
+	);
+
+	await expect(captureSession(CAPTURE_SESSION_PAYLOAD)).rejects.toThrow(
+		PermanentDrainError,
+	);
+});
+
+test("captureSession throws PermanentDrainError on 413 (oversized body)", async () => {
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async () => new Response("too big", { status: 413 })),
+	);
+
+	await expect(captureSession(CAPTURE_SESSION_PAYLOAD)).rejects.toThrow(
+		PermanentDrainError,
+	);
+});
+
+test("captureSession throws a plain Error (not PermanentDrainError) on 502 extraction_failed", async () => {
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(
+			async () =>
+				new Response('{"ok":false,"error":"extraction_failed"}', {
+					status: 502,
+				}),
+		),
+	);
+
+	await expect(captureSession(CAPTURE_SESSION_PAYLOAD)).rejects.toThrow();
+	await expect(captureSession(CAPTURE_SESSION_PAYLOAD)).rejects.not.toThrow(
+		PermanentDrainError,
+	);
+});
+
+test("captureSession throws a plain Error on 401", async () => {
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async () => new Response("nope", { status: 401 })),
+	);
+
+	await expect(captureSession(CAPTURE_SESSION_PAYLOAD)).rejects.toThrow();
+	await expect(captureSession(CAPTURE_SESSION_PAYLOAD)).rejects.not.toThrow(
+		PermanentDrainError,
+	);
+});
+
+test("captureSession throws a plain Error on a network failure", async () => {
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async () => {
+			throw new Error("ECONNREFUSED");
+		}),
+	);
+
+	await expect(captureSession(CAPTURE_SESSION_PAYLOAD)).rejects.toThrow();
+	await expect(captureSession(CAPTURE_SESSION_PAYLOAD)).rejects.not.toThrow(
+		PermanentDrainError,
+	);
+});
+
+test("captureSession throws a plain Error when no auth token can be resolved", async () => {
+	delete process.env.MONETA_AUTH_TOKEN;
+	const fetchMock = vi.fn();
+	vi.stubGlobal("fetch", fetchMock);
+
+	await expect(captureSession(CAPTURE_SESSION_PAYLOAD)).rejects.toThrow();
+	expect(fetchMock).not.toHaveBeenCalled();
+});
+
+test("captureSession throws a plain Error on an unparseable JSON response", async () => {
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async () => new Response("not json", { status: 200 })),
+	);
+
+	await expect(captureSession(CAPTURE_SESSION_PAYLOAD)).rejects.toThrow();
+	await expect(captureSession(CAPTURE_SESSION_PAYLOAD)).rejects.not.toThrow(
+		PermanentDrainError,
+	);
 });

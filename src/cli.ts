@@ -13,17 +13,20 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { mnemosyneHome } from "./config.js";
-import { dispatch } from "./dispatch.js";
+import { writeBrainDoc } from "./dispatch.js";
 import { PermanentDrainError } from "./errors.js";
-import { extract } from "./extract.js";
 import { hashLearning, Ledger } from "./ledger.js";
-import type { LLMDeps } from "./llm.js";
-import type { Target } from "./policy.js";
-import type { Provenance } from "./types.js";
+import type {
+	CaptureSessionPayload,
+	SessionCaptureResult,
+} from "./monetaWriter.js";
+import { parseTranscript } from "./transcript.js";
+import type { Learning } from "./types.js";
 
 export type DrainDeps = {
-	llm?: LLMDeps;
-	writeMoneta: (json: string) => Promise<void>;
+	captureSession: (
+		payload: CaptureSessionPayload,
+	) => Promise<SessionCaptureResult>;
 	brainInboxDir: string;
 	ledgerDir: string;
 	// Where per-entry failure breadcrumbs go. Defaults to stderr; `main` routes
@@ -37,35 +40,65 @@ type QueueEntry = {
 	session: string;
 	cwd: string;
 	ts: string;
+	agent?: string;
 };
 
+/**
+ * Drain one queue entry via moneta's /capture-session endpoint, which does
+ * ALL extraction/embedding server-side. mnemosyne's job here is just to:
+ *   1. read the transcript and hand its turns to moneta;
+ *   2. route the decision/lesson learnings moneta returns to the local
+ *      second-brain inbox (moneta already stored what it wants to moneta).
+ * `written` lists a "brain" entry per new inbox doc written; `skipped`
+ * counts learnings that were already in the local dedup ledger.
+ */
 export async function drainOnce(
 	entryPath: string,
 	deps: DrainDeps,
-): Promise<{ written: Target[]; skipped: number }> {
+): Promise<{ written: string[]; skipped: number }> {
 	const entry = JSON.parse(readFileSync(entryPath, "utf8")) as QueueEntry;
-	const prov: Provenance = {
+	// Throws PermanentDrainError when the transcript was GC'd — never retried.
+	const turns = parseTranscript(entry.transcript);
+	if (turns.length === 0) return { written: [], skipped: 0 };
+
+	const resp = await deps.captureSession({
+		turns,
 		session: entry.session,
 		cwd: entry.cwd,
 		ts: entry.ts,
-	};
+		source: "mnemosyne",
+	});
+
+	// moneta withheld its receipt for at least one learning (e.g. its own
+	// storage write failed) — it will re-extract on the next attempt, so keep
+	// this entry queued rather than routing a possibly-incomplete set to brain.
+	if (resp.learnings.some((l) => l.reason === "capture_failed")) {
+		throw new Error("moneta capture incomplete — retrying");
+	}
+
 	mkdirSync(deps.brainInboxDir, { recursive: true });
 	const ledger = new Ledger(deps.ledgerDir);
-	const learnings = await extract(entry.transcript, prov, deps.llm);
-	const written: Target[] = [];
+	const written: string[] = [];
 	let skipped = 0;
-	for (const l of learnings) {
-		const h = hashLearning(l);
+	for (const l of resp.learnings) {
+		if (l.kind !== "decision" && l.kind !== "lesson") continue;
+		if (l.reason === "below_min_confidence" || l.reason === "secret_detected")
+			continue;
+		const learning: Learning = {
+			text: l.text,
+			kind: l.kind,
+			confidence: l.confidence,
+			provenance: { session: entry.session, cwd: entry.cwd, ts: entry.ts },
+			...(l.title ? { title: l.title } : {}),
+		};
+		const h = hashLearning(learning);
 		if (ledger.has(h)) {
 			skipped++;
 			continue;
 		}
-		const targets = await dispatch(l, {
-			writeMoneta: deps.writeMoneta,
-			brainInboxDir: deps.brainInboxDir,
-		});
+		writeBrainDoc(learning, deps.brainInboxDir);
 		ledger.add(h);
-		written.push(...targets);
+		written.push("brain");
 	}
 	return { written, skipped };
 }
@@ -273,9 +306,10 @@ async function main(): Promise<void> {
 		return;
 	}
 	try {
-		const { replayOutbox, replayLegacyOutbox } = await import(
+		const { replayOutbox, replayLegacyOutbox, captureSession } = await import(
 			"./monetaWriter.js"
 		);
+		const { brainInboxDir: defaultInbox } = await import("./config.js");
 		// Replay/migrate spooled captures FIRST: these are already-extracted
 		// payloads that need only a POST (no LLM), so they must never sit behind
 		// the transcript queue. Delete a spool file only on a confirmed 2xx; a
@@ -288,24 +322,31 @@ async function main(): Promise<void> {
 		// Cap the dead-letter directory so permanent failures don't accumulate
 		// forever (see pruneDead / DEAD_TTL_MS).
 		const deadPruned = pruneDead(deadDir);
-		// Transcript queue: PARKED. Local LLM extraction (ollama / claude -p) is
-		// retired — all extraction/embedding now belongs to moneta. Until moneta
-		// exposes a server-side extraction endpoint, entries stay in the queue
-		// (the hook keeps enqueuing) rather than being processed with a local
-		// model. See tasks: "remove ollama" + "moneta server-side extraction".
-		const parked = countEntries(queueDir);
+		// Breadcrumbs from a failed entry go to the log file only; the one
+		// summary line below goes to both the log and the terminal, so a manual
+		// `mnemosyne drain` prints a single line instead of thousands.
+		const logToFile = (msg: string) => {
+			try {
+				appendFileSync(join(home, "drain.log"), msg);
+			} catch {
+				// log best-effort; never fail the drain on a logging error
+			}
+		};
+		// Transcript queue: extraction/embedding is now moneta's job
+		// (/capture-session) — mnemosyne only posts turns and routes the
+		// returned decision/lesson learnings to the second-brain inbox.
+		const queue = await drainQueue(queueDir, deadDir, {
+			captureSession,
+			brainInboxDir: defaultInbox(),
+			ledgerDir: join(home, "processed"),
+			log: logToFile,
+		});
 		const summary =
 			`drain: moneta-outbox replayed=${outbox.replayed} kept=${outbox.kept}; ` +
 			`legacy-outbox replayed=${legacy.replayed} kept=${legacy.kept} skipped=${legacy.skipped}; ` +
-			`dead pruned=${deadPruned}; queue parked=${parked} (ollama retired — awaiting moneta extraction)\n`;
-		// Breadcrumbs from replay go to the log file only; the one summary line
-		// goes to both the log and the terminal, so a manual `mnemosyne drain`
-		// prints a single line instead of thousands.
-		try {
-			appendFileSync(join(home, "drain.log"), summary);
-		} catch {
-			// log best-effort; never fail the drain on a logging error
-		}
+			`dead pruned=${deadPruned}; ` +
+			`queue drained=${queue.drained} dead=${queue.dead} retried=${queue.retried}\n`;
+		logToFile(summary);
 		process.stdout.write(summary);
 	} finally {
 		releaseDrainLock(home);
@@ -476,7 +517,7 @@ async function statusMain(): Promise<void> {
 	const dead = countEntries(join(home, "dead"));
 	const lines = [
 		`mnemosyne status (${home})`,
-		`  queue (awaiting extraction):     ${countEntries(join(home, "queue"))}`,
+		`  queue (awaiting drain):          ${countEntries(join(home, "queue"))}`,
 		`  moneta-outbox (to replay):       ${countEntries(join(home, "moneta-outbox"))}`,
 		`  legacy mem0 outbox (to migrate): ${countEntries(join(home, "outbox"))}`,
 		`  dead (permanent failures):       ${dead}${
