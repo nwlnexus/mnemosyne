@@ -1,6 +1,6 @@
 # Mnemosyne
 
-Mnemosyne worker: extract → route → dispatch session learnings. See olympus-sdk `docs/superpowers/specs/2026-07-05-mnemosyne-capture-pipeline-design.md`.
+Mnemosyne worker: enqueue session transcripts, POST them to moneta's `/capture-session` (which does ALL extraction/embedding server-side), and route the returned decision/lesson learnings to the local second-brain inbox. See olympus-sdk `docs/superpowers/specs/2026-07-05-mnemosyne-capture-pipeline-design.md`.
 
 ## Environment
 

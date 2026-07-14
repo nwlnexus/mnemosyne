@@ -16,6 +16,7 @@ import {
 	isEntryClaimedByConcurrentDrain,
 	moveToDead,
 } from "../src/cli.js";
+import type { SessionCaptureResult } from "../src/monetaWriter.js";
 
 // `statSync` is wrapped (not fully replaced) so every test still gets the
 // real filesystem; only the one `acquireDrainLock` race test below overrides
@@ -48,42 +49,39 @@ function writeEntry(dir: string, name: string, transcript: string): void {
 	);
 }
 
-function factDeps(writeMoneta: (json: string) => Promise<void>, extra = {}) {
-	return {
-		llm: {
-			fetchImpl: (async () =>
-				new Response("x", { status: 500 })) as unknown as typeof fetch,
-			runClaude: async () =>
-				JSON.stringify([
-					{ text: "PR #201 merged", kind: "fact", confidence: 0.9 },
-				]),
-		},
-		writeMoneta,
-		...extra,
-	};
+function factCaptureSession(extra?: Partial<SessionCaptureResult>) {
+	return vi.fn(
+		async (): Promise<SessionCaptureResult> => ({
+			status: "captured",
+			learnings: [
+				{ text: "PR #201 merged", kind: "fact", confidence: 0.9, stored: true },
+			],
+			...extra,
+		}),
+	);
 }
 
 test("missing transcript is moved to dead/ and removed from queue", async () => {
 	const { queueDir, deadDir, inbox, ledgerDir } = makeDirs();
 	writeEntry(queueDir, "dead-1.json", "/does/not/exist.jsonl");
-	const writeMoneta = vi.fn(async () => {});
-	const deps = { writeMoneta, brainInboxDir: inbox, ledgerDir };
+	const captureSession = vi.fn();
+	const deps = { captureSession, brainInboxDir: inbox, ledgerDir };
 
 	const res = await drainQueue(queueDir, deadDir, deps);
 
 	expect(res).toEqual({ drained: 0, dead: 1, retried: 0 });
 	expect(readdirSync(queueDir)).toEqual([]);
 	expect(readdirSync(deadDir)).toEqual(["dead-1.json"]);
-	expect(writeMoneta).not.toHaveBeenCalled();
+	expect(captureSession).not.toHaveBeenCalled();
 });
 
-test("transient failure leaves entry in queue and does not move it to dead/", async () => {
+test("transient failure (captureSession rejects) leaves entry in queue", async () => {
 	const { queueDir, deadDir, inbox, ledgerDir } = makeDirs();
 	writeEntry(queueDir, "transient-1.json", HEALTHY_TRANSCRIPT);
-	const writeMoneta = vi.fn(async () => {
+	const captureSession = vi.fn(async () => {
 		throw new Error("moneta unreachable");
 	});
-	const deps = factDeps(writeMoneta, { brainInboxDir: inbox, ledgerDir });
+	const deps = { captureSession, brainInboxDir: inbox, ledgerDir };
 
 	const res = await drainQueue(queueDir, deadDir, deps);
 
@@ -92,17 +90,43 @@ test("transient failure leaves entry in queue and does not move it to dead/", as
 	expect(existsSync(deadDir)).toBe(false);
 });
 
+test("a capture_failed learning leaves the entry queued (transient) and writes no brain doc", async () => {
+	const { queueDir, deadDir, inbox, ledgerDir } = makeDirs();
+	writeEntry(queueDir, "incomplete-1.json", HEALTHY_TRANSCRIPT);
+	const captureSession = vi.fn(
+		async (): Promise<SessionCaptureResult> => ({
+			status: "captured",
+			learnings: [
+				{
+					text: "chose D1 over Neon",
+					kind: "decision",
+					confidence: 0.9,
+					stored: false,
+					reason: "capture_failed",
+				},
+			],
+		}),
+	);
+	const deps = { captureSession, brainInboxDir: inbox, ledgerDir };
+
+	const res = await drainQueue(queueDir, deadDir, deps);
+
+	expect(res).toEqual({ drained: 0, dead: 0, retried: 1 });
+	expect(readdirSync(queueDir)).toEqual(["incomplete-1.json"]);
+	expect(readdirSync(inbox).length).toBe(0);
+});
+
 test("healthy entry is drained and removed from queue (regression)", async () => {
 	const { queueDir, deadDir, inbox, ledgerDir } = makeDirs();
 	writeEntry(queueDir, "healthy-1.json", HEALTHY_TRANSCRIPT);
-	const writeMoneta = vi.fn(async () => {});
-	const deps = factDeps(writeMoneta, { brainInboxDir: inbox, ledgerDir });
+	const captureSession = factCaptureSession();
+	const deps = { captureSession, brainInboxDir: inbox, ledgerDir };
 
 	const res = await drainQueue(queueDir, deadDir, deps);
 
 	expect(res).toEqual({ drained: 1, dead: 0, retried: 0 });
 	expect(readdirSync(queueDir)).toEqual([]);
-	expect(writeMoneta).toHaveBeenCalledOnce();
+	expect(captureSession).toHaveBeenCalledOnce();
 	expect(existsSync(deadDir)).toBe(false);
 });
 
@@ -131,11 +155,12 @@ test("success path: rm tolerates the entry already being removed by a concurrent
 	writeEntry(queueDir, "healthy-1.json", HEALTHY_TRANSCRIPT);
 	const p = join(queueDir, "healthy-1.json");
 	// Simulate another drain claiming (and removing) this entry while this
-	// drain's writeMoneta call is in flight.
-	const writeMoneta = vi.fn(async () => {
+	// drain's captureSession call is in flight.
+	const captureSession = vi.fn(async (): Promise<SessionCaptureResult> => {
 		rmSync(p, { force: true });
+		return { status: "captured", learnings: [] };
 	});
-	const deps = factDeps(writeMoneta, { brainInboxDir: inbox, ledgerDir });
+	const deps = { captureSession, brainInboxDir: inbox, ledgerDir };
 
 	const res = await drainQueue(queueDir, deadDir, deps);
 
@@ -165,8 +190,8 @@ test("isEntryClaimedByConcurrentDrain: true only for an ENOENT on the entry path
 test("missing transcript is still moved to dead/ (PermanentDrainError regression, unaffected by race tolerance)", async () => {
 	const { queueDir, deadDir, inbox, ledgerDir } = makeDirs();
 	writeEntry(queueDir, "dead-1.json", "/does/not/exist.jsonl");
-	const writeMoneta = vi.fn(async () => {});
-	const deps = { writeMoneta, brainInboxDir: inbox, ledgerDir };
+	const captureSession = vi.fn();
+	const deps = { captureSession, brainInboxDir: inbox, ledgerDir };
 
 	const res = await drainQueue(queueDir, deadDir, deps);
 

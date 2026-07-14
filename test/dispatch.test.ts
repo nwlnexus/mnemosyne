@@ -1,15 +1,14 @@
 import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, test, vi } from "vitest";
-import { dispatch } from "../src/dispatch.js";
+import { expect, test } from "vitest";
+import { writeBrainDoc } from "../src/dispatch.js";
 import type { Learning } from "../src/types.js";
 
 const prov = { session: "s1", cwd: "/repo", ts: "2026-07-05T00:00:00Z" };
 
-test("dispatch writes moneta capture and brain inbox file for a decision", async () => {
+test("writeBrainDoc writes an inbox file named after the slug + content hash", () => {
 	const inbox = mkdtempSync(join(tmpdir(), "inbox-"));
-	const writeMoneta = vi.fn(async () => {});
 	const l: Learning = {
 		text: "chose D1 over Neon for cost",
 		kind: "decision",
@@ -17,86 +16,37 @@ test("dispatch writes moneta capture and brain inbox file for a decision", async
 		title: "D1 vs Neon",
 		provenance: prov,
 	};
-	const targets = await dispatch(l, {
-		writeMoneta,
-		brainInboxDir: inbox,
-	});
-	expect(targets.sort()).toEqual(["brain", "moneta"]);
-	expect(writeMoneta).toHaveBeenCalledOnce();
-	expect(JSON.parse(writeMoneta.mock.calls[0][0]).content).toBe(
-		"chose D1 over Neon for cost",
-	);
+	const filename = writeBrainDoc(l, inbox);
+	expect(filename).toMatch(/^d1-vs-neon-[0-9a-f]{8}\.md$/);
 	const files = readdirSync(inbox);
-	const matchingFiles = files.filter((f) => f.startsWith("d1-vs-neon-"));
-	expect(matchingFiles).toHaveLength(1);
-	const body = readFileSync(join(inbox, matchingFiles[0]), "utf8");
+	expect(files).toEqual([filename]);
+	const body = readFileSync(join(inbox, filename), "utf8");
 	expect(body).toContain("status: new");
 	expect(body).toContain('session: "s1"');
+	expect(body).toContain("chose D1 over Neon for cost");
 });
 
-test("dispatch shapes the moneta capture payload correctly", async () => {
+test("writeBrainDoc falls back to the text when there is no title", () => {
 	const inbox = mkdtempSync(join(tmpdir(), "inbox-"));
-	const writeMoneta = vi.fn(async () => {});
-	const l: Learning = {
-		text: "chose D1 over Neon for cost",
-		kind: "decision",
-		confidence: 0.9,
-		title: "D1 vs Neon",
-		provenance: prov,
-	};
-	const targets = await dispatch(l, {
-		writeMoneta,
-		brainInboxDir: inbox,
-	});
-	expect(targets).toContain("moneta");
-	expect(writeMoneta).toHaveBeenCalledOnce();
-	const capture = JSON.parse(writeMoneta.mock.calls[0][0]);
-	// content is exactly the learning text — provenance must stay out of the
-	// embedded field so it doesn't dilute recall.
-	expect(capture.content).toBe("chose D1 over Neon for cost");
-	// provenance instead rides in metadata (stored, not embedded)
-	expect(capture.metadata).toEqual({
-		kind: "decision",
-		session: "s1",
-		cwd: "/repo",
-		ts: "2026-07-05T00:00:00Z",
-	});
-	// tags include the mnemosyne marker plus the learning kind
-	expect(capture.tags).toContain("mnemosyne");
-	expect(capture.tags).toContain("decision");
-	expect(capture.source).toBe("mnemosyne");
-});
-
-test("dispatch does not invoke moneta for a brain-only lesson", async () => {
-	const inbox = mkdtempSync(join(tmpdir(), "inbox-"));
-	const writeMoneta = vi.fn(async () => {});
 	const l: Learning = {
 		text: "D1 timestamps must be integers",
 		kind: "lesson",
 		confidence: 0.9,
 		provenance: prov,
 	};
-	const targets = await dispatch(l, {
-		writeMoneta,
-		brainInboxDir: inbox,
-	});
-	expect(targets).toEqual(["brain"]);
-	expect(writeMoneta).not.toHaveBeenCalled();
+	const filename = writeBrainDoc(l, inbox);
+	expect(filename).toMatch(/^d1-timestamps-must-be-integers-[0-9a-f]{8}\.md$/);
 });
 
-test("dispatch prevents slug collision by appending content hash", async () => {
+test("writeBrainDoc prevents slug collision by appending the content hash", () => {
 	const inbox = mkdtempSync(join(tmpdir(), "inbox-"));
-	const writeMoneta = vi.fn(async () => {});
-
-	// Two distinct learnings with the same title
 	const l1: Learning = {
 		text: "chose D1 for cost savings",
 		kind: "decision",
 		confidence: 0.9,
 		title: "Dup Title",
-		provenance: { session: "s1", cwd: "/repo", ts: "2026-07-05T00:00:00Z" },
+		provenance: prov,
 	};
-
 	const l2: Learning = {
 		text: "chose D1 for performance",
 		kind: "decision",
@@ -105,28 +55,14 @@ test("dispatch prevents slug collision by appending content hash", async () => {
 		provenance: { session: "s2", cwd: "/repo", ts: "2026-07-05T01:00:00Z" },
 	};
 
-	await dispatch(l1, { writeMoneta, brainInboxDir: inbox });
-	await dispatch(l2, { writeMoneta, brainInboxDir: inbox });
+	writeBrainDoc(l1, inbox);
+	writeBrainDoc(l2, inbox);
 
-	const files = readdirSync(inbox);
-	const matchingFiles = files.filter((f) => f.startsWith("dup-title-"));
-
-	// Both distinct learnings should produce distinct files
-	expect(matchingFiles).toHaveLength(2);
-
-	// Verify content of both files - read all files and check both texts are present
-	const allBodies = matchingFiles.map((f) =>
-		readFileSync(join(inbox, f), "utf8"),
-	);
-	const allContent = allBodies.join("\n");
-
-	// Both files should have status: new
-	expect(allBodies).toHaveLength(2);
-	allBodies.forEach((body) => {
-		expect(body).toContain("status: new");
-	});
-
-	// Both distinct texts should be in the inbox files
+	const files = readdirSync(inbox).filter((f) => f.startsWith("dup-title-"));
+	expect(files).toHaveLength(2);
+	const allContent = files
+		.map((f) => readFileSync(join(inbox, f), "utf8"))
+		.join("\n");
 	expect(allContent).toContain("chose D1 for cost savings");
 	expect(allContent).toContain("chose D1 for performance");
 });

@@ -1,15 +1,11 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { hashLearning } from "./ledger.js";
-import type { Target } from "./policy.js";
-import { route } from "./policy.js";
 import type { Learning } from "./types.js";
 
-export type DispatchDeps = {
-	writeMoneta: (json: string) => Promise<void>;
-	brainInboxDir: string;
-	slugify?: (s: string) => string;
-};
+// moneta is the sole memory sink for captures now (see monetaWriter.ts
+// captureSession) — this module only writes the local second-brain inbox
+// doc for learnings drainOnce routes there (decisions + lessons).
 
 function defaultSlug(s: string): string {
 	return (
@@ -19,25 +15,6 @@ function defaultSlug(s: string): string {
 			.replace(/^-+|-+$/g, "")
 			.slice(0, 60) || "note"
 	);
-}
-
-// Payload for moneta's POST /capture ({ content, tags, source, metadata }).
-// `content` is just the learning text — moneta embeds this, so provenance
-// must stay out of it to avoid diluting recall. Provenance instead rides in
-// `metadata` (stored + returned, never embedded; requires moneta >= v1.4.0).
-// `tags` encodes the mnemosyne marker plus the learning kind.
-function monetaPayload(l: Learning): string {
-	return JSON.stringify({
-		content: l.text,
-		tags: ["mnemosyne", l.kind],
-		source: "mnemosyne",
-		metadata: {
-			kind: l.kind,
-			session: l.provenance.session,
-			cwd: l.provenance.cwd,
-			ts: l.provenance.ts,
-		},
-	});
 }
 
 function inboxDoc(l: Learning): string {
@@ -60,20 +37,17 @@ function inboxDoc(l: Learning): string {
 	].join("\n");
 }
 
-export async function dispatch(
+// Write the second-brain inbox doc for `l`. Filename is `${slug}-${hash8}.md`
+// (slug from the title/text, hash from hashLearning) so re-dispatching the
+// same learning overwrites rather than duplicating.
+export function writeBrainDoc(
 	l: Learning,
-	deps: DispatchDeps,
-): Promise<Target[]> {
-	const slugify = deps.slugify ?? defaultSlug;
-	const targets = route(l);
-	for (const t of targets) {
-		if (t === "moneta") await deps.writeMoneta(monetaPayload(l));
-		if (t === "brain") {
-			const slug = slugify(l.title ?? l.text);
-			const hash = hashLearning(l).slice(0, 8);
-			const filename = `${slug}-${hash}.md`;
-			writeFileSync(join(deps.brainInboxDir, filename), inboxDoc(l));
-		}
-	}
-	return targets;
+	brainInboxDir: string,
+	slugify: (s: string) => string = defaultSlug,
+): string {
+	const slug = slugify(l.title ?? l.text);
+	const hash = hashLearning(l).slice(0, 8);
+	const filename = `${slug}-${hash}.md`;
+	writeFileSync(join(brainInboxDir, filename), inboxDoc(l));
+	return filename;
 }
