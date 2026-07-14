@@ -203,6 +203,28 @@ export async function replayLegacyOutbox(): Promise<LegacyReplaySummary> {
 	return summary;
 }
 
+// GET /count — total entries moneta holds. Same token/Access/redirect
+// contract as the other calls; fail-open to null so `status` degrades to
+// "moneta: unreachable" rather than throwing.
+export async function monetaCount(): Promise<number | null> {
+	const token = resolveToken();
+	if (!token) return null;
+	try {
+		const res = await fetch(`${monetaUrl()}/count`, {
+			headers: {
+				authorization: `Bearer ${token}`,
+				...resolveAccessHeaders(),
+			},
+			redirect: "manual",
+		});
+		if (!res.ok) return null;
+		const data = (await res.json()) as { count?: unknown };
+		return typeof data.count === "number" ? data.count : null;
+	} catch {
+		return null;
+	}
+}
+
 // ─── recall (read path) ──────────────────────────────────────────────────────
 
 export type RecallResult = { content: string };
