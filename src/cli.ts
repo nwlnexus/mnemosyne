@@ -21,7 +21,6 @@ import type { Provenance } from "./types.js";
 
 export type DrainDeps = {
 	llm?: LLMDeps;
-	writeMem0: (json: string) => Promise<void>;
 	writeMoneta: (json: string) => Promise<void>;
 	brainInboxDir: string;
 	ledgerDir: string;
@@ -56,7 +55,6 @@ export async function drainOnce(
 			continue;
 		}
 		const targets = await dispatch(l, {
-			writeMem0: deps.writeMem0,
 			writeMoneta: deps.writeMoneta,
 			brainInboxDir: deps.brainInboxDir,
 		});
@@ -142,7 +140,7 @@ export async function drainQueue(
 					`drain: ${f} failed: ${reason} (discarded to dead/)\n`,
 				);
 			} else {
-				// transient (network / LLM / mem0) — leave for the next drain
+				// transient (network / LLM / moneta) — leave for the next drain
 				summary.retried++;
 				process.stderr.write(
 					`drain: ${f} failed: ${reason} (left for retry)\n`,
@@ -211,10 +209,8 @@ async function main(): Promise<void> {
 		return;
 	}
 	try {
-		const { spawnMem0Add } = await import("./mem0Writer.js");
 		const { writeMoneta, replayOutbox } = await import("./monetaWriter.js");
 		const deps: DrainDeps = {
-			writeMem0: spawnMem0Add,
 			writeMoneta,
 			brainInboxDir: defaultInbox(),
 			ledgerDir: join(home, "processed"),

@@ -6,7 +6,6 @@ import { route } from "./policy.js";
 import type { Learning } from "./types.js";
 
 export type DispatchDeps = {
-	writeMem0: (json: string) => Promise<void>;
 	writeMoneta: (json: string) => Promise<void>;
 	brainInboxDir: string;
 	slugify?: (s: string) => string;
@@ -20,21 +19,6 @@ function defaultSlug(s: string): string {
 			.replace(/^-+|-+$/g, "")
 			.slice(0, 60) || "note"
 	);
-}
-
-function mem0Payload(l: Learning): string {
-	return JSON.stringify({
-		user_id: "mnemosyne",
-		text: l.text,
-		infer: false,
-		app: "claude-code",
-		metadata: {
-			kind: l.kind,
-			session: l.provenance.session,
-			cwd: l.provenance.cwd,
-			ts: l.provenance.ts,
-		},
-	});
 }
 
 // Payload for moneta's POST /capture ({ content, tags, source, metadata }).
@@ -83,7 +67,6 @@ export async function dispatch(
 	const slugify = deps.slugify ?? defaultSlug;
 	const targets = route(l);
 	for (const t of targets) {
-		if (t === "mem0") await deps.writeMem0(mem0Payload(l));
 		if (t === "moneta") await deps.writeMoneta(monetaPayload(l));
 		if (t === "brain") {
 			const slug = slugify(l.title ?? l.text);

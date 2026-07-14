@@ -30,11 +30,15 @@ test("isSecret flags token-shaped strings", () => {
 	expect(isSecret("see https://example.com/docs")).toBe(false);
 });
 
-test("route dual-writes moneta exactly wherever it writes mem0", () => {
+test("route sends a learning to moneta iff it is a routable fact or decision", () => {
 	for (const { kind, confidence, text } of golden) {
 		const l: Learning = { text, kind, confidence, provenance: prov };
 		const targets = route(l);
-		expect(targets.includes("moneta")).toBe(targets.includes("mem0"));
+		// moneta is the sole memory sink: exactly the facts/decisions that
+		// survive the noise/confidence/secret gates land there.
+		expect(targets.includes("moneta")).toBe(
+			(kind === "fact" || kind === "decision") && targets.length > 0,
+		);
 	}
 });
 
