@@ -136,24 +136,52 @@ export function isEntryClaimedByConcurrentDrain(
 	return e?.code === "ENOENT" && e.path === entryPath;
 }
 
+// Per-entry drain work is I/O-bound (a `/capture-session` POST that triggers
+// server-side LLM extraction on moneta, which has no rate limit on that
+// endpoint), so draining entries concurrently instead of one at a time is a
+// big win on a large backlog. `MNEMOSYNE_DRAIN_CONCURRENCY` overrides the
+// worker-pool size; anything that isn't a positive number falls back to the
+// default of 8.
+const DEFAULT_DRAIN_CONCURRENCY = 8;
+
+export function resolveDrainConcurrency(): number {
+	const n =
+		Number(process.env.MNEMOSYNE_DRAIN_CONCURRENCY) ||
+		DEFAULT_DRAIN_CONCURRENCY;
+	return Math.max(1, Math.floor(n));
+}
+
 /**
- * Drain every `*.json` entry in `queueDir`, classifying failures:
+ * Drain every `*.json` entry in `queueDir` using a bounded pool of `concurrency`
+ * workers (default: {@link resolveDrainConcurrency}), classifying failures:
  *   - success            → entry removed from the queue;
  *   - PermanentDrainError → entry moved to `deadDir` (never requeued);
  *   - claimed by a concurrent drain → skipped silently (breadcrumb only,
  *     not counted as drained/dead/retried);
  *   - any other error     → entry left in the queue for the next drain (retry).
  * Every failure writes a `drain: <file> failed: <reason>` breadcrumb to stderr.
+ * `summary.drained/dead/retried` are plain numbers mutated from each worker;
+ * since Node is single-threaded, each entry increments exactly one counter
+ * (or none, for a concurrent-claim skip) with no risk of a lost update.
+ * Entries are no longer processed in listing order — none of the drain
+ * semantics depend on order.
  */
 export async function drainQueue(
 	queueDir: string,
 	deadDir: string,
 	deps: DrainDeps,
+	concurrency: number = resolveDrainConcurrency(),
 ): Promise<DrainSummary> {
 	const summary: DrainSummary = { drained: 0, dead: 0, retried: 0 };
 	if (!existsSync(queueDir)) return summary;
 	const log = deps.log ?? ((m: string) => process.stderr.write(m));
-	for (const f of readdirSync(queueDir).filter((n) => n.endsWith(".json"))) {
+	const files = readdirSync(queueDir).filter((n) => n.endsWith(".json"));
+	const safeConcurrency =
+		Number.isFinite(concurrency) && concurrency >= 1
+			? Math.floor(concurrency)
+			: DEFAULT_DRAIN_CONCURRENCY;
+
+	const drainEntry = async (f: string): Promise<void> => {
 		const p = join(queueDir, f);
 		try {
 			await drainOnce(p, deps);
@@ -163,13 +191,13 @@ export async function drainQueue(
 		} catch (err) {
 			if (isEntryClaimedByConcurrentDrain(err, p)) {
 				log(`drain: ${f} already handled by a concurrent drain — skipping\n`);
-				continue;
+				return;
 			}
 			const reason = err instanceof Error ? err.message : String(err);
 			if (err instanceof PermanentDrainError) {
 				if (!moveToDead(p, deadDir, f)) {
 					log(`drain: ${f} already handled by a concurrent drain — skipping\n`);
-					continue;
+					return;
 				}
 				summary.dead++;
 				log(`drain: ${f} failed: ${reason} (discarded to dead/)\n`);
@@ -179,7 +207,22 @@ export async function drainQueue(
 				log(`drain: ${f} failed: ${reason} (left for retry)\n`);
 			}
 		}
-	}
+	};
+
+	// Bounded worker pool: each worker pulls the next file off a shared cursor
+	// until the list is exhausted. No locking needed — the cursor is only ever
+	// read/incremented between `await`s on Node's single-threaded event loop.
+	let cursor = 0;
+	const worker = async (): Promise<void> => {
+		while (cursor < files.length) {
+			const f = files[cursor++];
+			if (f === undefined) continue;
+			await drainEntry(f);
+		}
+	};
+	const workerCount = Math.min(safeConcurrency, files.length);
+	await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
 	return summary;
 }
 
