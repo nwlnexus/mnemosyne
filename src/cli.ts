@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import {
+	appendFileSync,
 	existsSync,
 	mkdirSync,
 	readdirSync,
@@ -11,7 +12,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { brainInboxDir as defaultInbox, mnemosyneHome } from "./config.js";
+import { mnemosyneHome } from "./config.js";
 import { dispatch } from "./dispatch.js";
 import { PermanentDrainError } from "./errors.js";
 import { extract } from "./extract.js";
@@ -25,6 +26,10 @@ export type DrainDeps = {
 	writeMoneta: (json: string) => Promise<void>;
 	brainInboxDir: string;
 	ledgerDir: string;
+	// Where per-entry failure breadcrumbs go. Defaults to stderr; `main` routes
+	// them to the drain log file instead so a manual `mnemosyne drain` prints
+	// only the one summary line to the terminal (not thousands of breadcrumbs).
+	log?: (msg: string) => void;
 };
 
 type QueueEntry = {
@@ -114,6 +119,7 @@ export async function drainQueue(
 ): Promise<DrainSummary> {
 	const summary: DrainSummary = { drained: 0, dead: 0, retried: 0 };
 	if (!existsSync(queueDir)) return summary;
+	const log = deps.log ?? ((m: string) => process.stderr.write(m));
 	for (const f of readdirSync(queueDir).filter((n) => n.endsWith(".json"))) {
 		const p = join(queueDir, f);
 		try {
@@ -123,29 +129,21 @@ export async function drainQueue(
 			summary.drained++;
 		} catch (err) {
 			if (isEntryClaimedByConcurrentDrain(err, p)) {
-				process.stderr.write(
-					`drain: ${f} already handled by a concurrent drain — skipping\n`,
-				);
+				log(`drain: ${f} already handled by a concurrent drain — skipping\n`);
 				continue;
 			}
 			const reason = err instanceof Error ? err.message : String(err);
 			if (err instanceof PermanentDrainError) {
 				if (!moveToDead(p, deadDir, f)) {
-					process.stderr.write(
-						`drain: ${f} already handled by a concurrent drain — skipping\n`,
-					);
+					log(`drain: ${f} already handled by a concurrent drain — skipping\n`);
 					continue;
 				}
 				summary.dead++;
-				process.stderr.write(
-					`drain: ${f} failed: ${reason} (discarded to dead/)\n`,
-				);
+				log(`drain: ${f} failed: ${reason} (discarded to dead/)\n`);
 			} else {
 				// transient (network / LLM / moneta) — leave for the next drain
 				summary.retried++;
-				process.stderr.write(
-					`drain: ${f} failed: ${reason} (left for retry)\n`,
-				);
+				log(`drain: ${f} failed: ${reason} (left for retry)\n`);
 			}
 		}
 	}
@@ -198,11 +196,76 @@ export function releaseDrainLock(home: string): void {
 	rmSync(join(home, "drain.lock"), { recursive: true, force: true });
 }
 
+// Dead-lettered entries (permanent failures, e.g. GC'd temp-dir transcripts)
+// are never retried, so without a cap `dead/` grows forever. Prune anything
+// older than this on every drain; recent failures stay for inspection.
+export const DEAD_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Delete `dead/` entries whose mtime is older than `ttlMs`. Returns the number
+ * pruned. Tolerant of a missing dir (returns 0) and of individual stat/unlink
+ * races (skips that entry) so a prune never breaks a drain.
+ */
+export function pruneDead(
+	deadDir: string,
+	ttlMs = DEAD_TTL_MS,
+	now = Date.now(),
+): number {
+	let files: string[];
+	try {
+		files = readdirSync(deadDir);
+	} catch {
+		return 0;
+	}
+	let pruned = 0;
+	for (const f of files) {
+		const p = join(deadDir, f);
+		try {
+			if (now - statSync(p).mtimeMs > ttlMs) {
+				rmSync(p, { force: true });
+				pruned++;
+			}
+		} catch {
+			// vanished or unstattable — nothing to prune here
+		}
+	}
+	return pruned;
+}
+
+/** Count `*.json` entries in `dir` (0 if the dir is absent). */
+export function countEntries(dir: string): number {
+	try {
+		return readdirSync(dir).filter((n) => n.endsWith(".json")).length;
+	} catch {
+		return 0;
+	}
+}
+
+/** Age in ms of the oldest entry in `dir`, or null if empty/absent. */
+export function oldestAgeMs(dir: string, now = Date.now()): number | null {
+	let files: string[];
+	try {
+		files = readdirSync(dir);
+	} catch {
+		return null;
+	}
+	let oldest: number | null = null;
+	for (const f of files) {
+		try {
+			const m = statSync(join(dir, f)).mtimeMs;
+			if (oldest === null || m < oldest) oldest = m;
+		} catch {
+			// skip unstattable entry
+		}
+	}
+	return oldest === null ? null : now - oldest;
+}
+
 async function main(): Promise<void> {
 	const home = mnemosyneHome();
+	if (!existsSync(home)) return;
 	const queueDir = join(home, "queue");
 	const deadDir = join(home, "dead");
-	if (!existsSync(queueDir)) return;
 	// The SessionStart hook backgrounds a drain on every session start, so
 	// concurrent drains are routine — serialize on a lock instead of racing.
 	if (!acquireDrainLock(home)) {
@@ -210,30 +273,40 @@ async function main(): Promise<void> {
 		return;
 	}
 	try {
-		const { writeMoneta, replayOutbox, replayLegacyOutbox } = await import(
+		const { replayOutbox, replayLegacyOutbox } = await import(
 			"./monetaWriter.js"
 		);
-		const deps: DrainDeps = {
-			writeMoneta,
-			brainInboxDir: defaultInbox(),
-			ledgerDir: join(home, "processed"),
-		};
-		const queue = await drainQueue(queueDir, deadDir, deps);
-		// Retry any captures that previously failed and were spooled. Deletes a
-		// spool file only on confirmed 2xx; a still-failing capture stays for
-		// the next drain (moneta dedupes server-side, so re-posts are safe).
+		// Replay/migrate spooled captures FIRST: these are already-extracted
+		// payloads that need only a POST (no LLM), so they must never sit behind
+		// the transcript queue. Delete a spool file only on a confirmed 2xx; a
+		// still-failing capture stays for the next drain (moneta dedupes
+		// server-side, so re-posts are safe).
 		const outbox = await replayOutbox();
-		// Also migrate anything still spooled in the legacy mem0 outbox —
-		// converted to moneta captures, same 2xx-or-keep contract. No-op once
-		// the directory is empty or gone.
+		// Convert + migrate anything still spooled in the legacy mem0 outbox,
+		// same 2xx-or-keep contract. No-op once the directory is empty or gone.
 		const legacy = await replayLegacyOutbox();
-		// One summary line per drain (stderr, same stream as the failure
-		// breadcrumbs, so drain.log tells the whole story).
-		process.stderr.write(
-			`drain: queue drained=${queue.drained} dead=${queue.dead} retried=${queue.retried}; ` +
-				`moneta-outbox replayed=${outbox.replayed} kept=${outbox.kept}; ` +
-				`legacy-outbox replayed=${legacy.replayed} kept=${legacy.kept} skipped=${legacy.skipped}\n`,
-		);
+		// Cap the dead-letter directory so permanent failures don't accumulate
+		// forever (see pruneDead / DEAD_TTL_MS).
+		const deadPruned = pruneDead(deadDir);
+		// Transcript queue: PARKED. Local LLM extraction (ollama / claude -p) is
+		// retired — all extraction/embedding now belongs to moneta. Until moneta
+		// exposes a server-side extraction endpoint, entries stay in the queue
+		// (the hook keeps enqueuing) rather than being processed with a local
+		// model. See tasks: "remove ollama" + "moneta server-side extraction".
+		const parked = countEntries(queueDir);
+		const summary =
+			`drain: moneta-outbox replayed=${outbox.replayed} kept=${outbox.kept}; ` +
+			`legacy-outbox replayed=${legacy.replayed} kept=${legacy.kept} skipped=${legacy.skipped}; ` +
+			`dead pruned=${deadPruned}; queue parked=${parked} (ollama retired — awaiting moneta extraction)\n`;
+		// Breadcrumbs from replay go to the log file only; the one summary line
+		// goes to both the log and the terminal, so a manual `mnemosyne drain`
+		// prints a single line instead of thousands.
+		try {
+			appendFileSync(join(home, "drain.log"), summary);
+		} catch {
+			// log best-effort; never fail the drain on a logging error
+		}
+		process.stdout.write(summary);
 	} finally {
 		releaseDrainLock(home);
 	}
@@ -386,8 +459,43 @@ async function agentsMain(): Promise<void> {
 		);
 }
 
+// ─── status ─────────────────────────────────────────────────────────────────
+// `mnemosyne status`: a terse snapshot of the local spool + the moneta total,
+// so the backlog is inspectable without eyeballing directory listings.
+
+function fmtAge(ms: number | null): string {
+	if (ms === null) return "—";
+	const d = Math.floor(ms / 86_400_000);
+	const h = Math.floor((ms % 86_400_000) / 3_600_000);
+	return d > 0 ? `${d}d ${h}h` : `${h}h`;
+}
+
+async function statusMain(): Promise<void> {
+	const home = mnemosyneHome();
+	const { monetaCount } = await import("./monetaWriter.js");
+	const dead = countEntries(join(home, "dead"));
+	const lines = [
+		`mnemosyne status (${home})`,
+		`  queue (awaiting extraction):     ${countEntries(join(home, "queue"))}`,
+		`  moneta-outbox (to replay):       ${countEntries(join(home, "moneta-outbox"))}`,
+		`  legacy mem0 outbox (to migrate): ${countEntries(join(home, "outbox"))}`,
+		`  dead (permanent failures):       ${dead}${
+			dead
+				? ` (oldest ${fmtAge(oldestAgeMs(join(home, "dead")))}, TTL ${DEAD_TTL_MS / 86_400_000}d)`
+				: ""
+		}`,
+		`  drain lock:                      ${existsSync(join(home, "drain.lock")) ? "held" : "free"}`,
+	];
+	const total = await monetaCount();
+	lines.push(
+		`  moneta total entries:            ${total === null ? "unreachable" : total}`,
+	);
+	process.stdout.write(`${lines.join("\n")}\n`);
+}
+
 const command = process.argv[2];
 if (command === "drain") void main();
+else if (command === "status") void statusMain();
 else if (command === "hook") void hookMain();
 else if (command === "install-hooks") void installMain();
 else if (command === "agents") void agentsMain();
