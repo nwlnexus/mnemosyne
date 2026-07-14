@@ -202,3 +202,41 @@ export async function replayLegacyOutbox(): Promise<LegacyReplaySummary> {
 	}
 	return summary;
 }
+
+// ─── recall (read path) ──────────────────────────────────────────────────────
+
+export type RecallResult = { content: string };
+
+// GET /recall with insight=false (skips moneta's ~5s LLM prose synthesis —
+// machine callers never show it). Same token/Access resolution and
+// never-follow-redirects contract as the capture path. Fail-open: any
+// problem returns null so a session start can never break on recall.
+export async function recallMoneta(
+	query: string,
+	topK = 5,
+): Promise<RecallResult[] | null> {
+	const token = resolveToken();
+	if (!token) return null;
+	try {
+		const u = new URL(`${monetaUrl()}/recall`);
+		u.searchParams.set("q", query);
+		u.searchParams.set("topK", String(topK));
+		u.searchParams.set("insight", "false");
+		const res = await fetch(u, {
+			headers: {
+				authorization: `Bearer ${token}`,
+				...resolveAccessHeaders(),
+			},
+			redirect: "manual",
+		});
+		if (!res.ok) return null;
+		const data = (await res.json()) as { results?: unknown };
+		if (!Array.isArray(data.results)) return null;
+		return data.results.filter(
+			(r): r is RecallResult =>
+				!!r && typeof (r as RecallResult).content === "string",
+		);
+	} catch {
+		return null;
+	}
+}

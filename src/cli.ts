@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { spawn } from "node:child_process";
 import {
 	existsSync,
 	mkdirSync,
@@ -238,4 +239,155 @@ async function main(): Promise<void> {
 	}
 }
 
-if (process.argv[2] === "drain") void main();
+// ─── agent-agnostic hook entrypoint ─────────────────────────────────────────
+// Installed configs across agents all invoke `mnemosyne hook <agent> <event>`
+// (see src/agents.ts). Behavior is fail-open end to end: a hook must never
+// break a session, so every path resolves to exit 0 with agent-safe stdout.
+
+export type HookDeps = {
+	home: string;
+	kickDrain: () => void;
+	recall: (query: string) => Promise<{ content: string }[] | null>;
+};
+
+const RECALL_TOP_K = 5;
+
+function recallBlock(project: string, results: { content: string }[]): string {
+	const shown = Math.min(RECALL_TOP_K, results.length);
+	const lines = [
+		`Recalled ${results.length} memories for ${project} — top ${shown}:`,
+	];
+	for (const [i, r] of results.slice(0, RECALL_TOP_K).entries()) {
+		const one = r.content.split(/\s+/).join(" ").trim();
+		if (one)
+			lines.push(
+				`${i + 1}. ${one.length > 200 ? `${one.slice(0, 199).trimEnd()}…` : one}`,
+			);
+	}
+	return lines.length > 1 ? lines.join("\n") : "";
+}
+
+export async function handleHook(
+	agent: import("./agents.js").AgentId,
+	event: string,
+	stdin: string,
+	deps: HookDeps,
+): Promise<string> {
+	const { normalizePayload, renderInjection } = await import("./agents.js");
+	const io = { home: deps.home };
+	const p = normalizePayload(agent, stdin, io);
+
+	if (event === "enqueue") {
+		if (p.transcript) {
+			const queueDir = join(mnemosyneHome(), "queue");
+			mkdirSync(queueDir, { recursive: true });
+			const stamp = new Date()
+				.toISOString()
+				.replace(/[-:]/g, "")
+				.replace(/\..*/, "");
+			writeFileSync(
+				join(queueDir, `${stamp}-${p.session}.json`),
+				JSON.stringify({
+					transcript: p.transcript,
+					session: p.session,
+					cwd: p.cwd,
+					ts: new Date().toISOString(),
+					agent,
+				}),
+			);
+		}
+		// cursor rejects empty stdout on some events; a bare object is inert
+		return agent === "cursor" ? "{}" : "";
+	}
+
+	// session-start: kick a background drain, then inject recall context.
+	try {
+		deps.kickDrain();
+	} catch {
+		// fail-open
+	}
+	const project = p.cwd.replace(/\/+$/, "").split("/").pop() || p.cwd;
+	let block = "";
+	try {
+		const results = await deps.recall(project);
+		if (results?.length) block = recallBlock(project, results);
+	} catch {
+		// fail-open
+	}
+	if (!block) return agent === "cursor" ? renderInjection("cursor", "") : "";
+	return renderInjection(agent, block);
+}
+
+async function readStdin(): Promise<string> {
+	const chunks: Buffer[] = [];
+	try {
+		for await (const c of process.stdin) chunks.push(c as Buffer);
+	} catch {
+		// fail-open
+	}
+	return Buffer.concat(chunks).toString("utf8");
+}
+
+async function hookMain(): Promise<void> {
+	const agentArg = process.argv[3] ?? "";
+	const event = process.argv[4] ?? "";
+	const { AGENTS } = await import("./agents.js");
+	if (!(agentArg in AGENTS)) return; // unknown agent → silent fail-open
+	const { homedir } = await import("node:os");
+	const { recallMoneta } = await import("./monetaWriter.js");
+	const out = await handleHook(
+		agentArg as import("./agents.js").AgentId,
+		event,
+		await readStdin(),
+		{
+			home: homedir(),
+			kickDrain: () => {
+				const self = process.argv[1] ?? "mnemosyne";
+				const child = spawn(process.execPath, [self, "drain"], {
+					detached: true,
+					stdio: "ignore",
+				});
+				child.unref();
+			},
+			recall: (q) => recallMoneta(q, RECALL_TOP_K),
+		},
+	);
+	if (out) process.stdout.write(`${out}\n`);
+}
+
+async function installMain(): Promise<void> {
+	const { installHooks, detectAgents } = await import("./agents.js");
+	const { homedir } = await import("node:os");
+	const dryRun = process.argv.includes("--dry-run");
+	const detected = detectAgents({ home: homedir() });
+	if (!detected.length) {
+		process.stdout.write("install-hooks: no supported agents detected\n");
+		return;
+	}
+	for (const r of installHooks({ home: homedir() }, dryRun)) {
+		const state = r.changed
+			? dryRun
+				? "would install"
+				: "installed"
+			: "already wired";
+		process.stdout.write(
+			`${r.agent}: ${state}${r.notes.length ? ` (${r.notes.join("; ")})` : ""}\n`,
+		);
+	}
+}
+
+async function agentsMain(): Promise<void> {
+	const { AGENTS, detectAgents } = await import("./agents.js");
+	const { homedir } = await import("node:os");
+	const found = new Set(detectAgents({ home: homedir() }));
+	for (const id of Object.keys(AGENTS))
+		process.stdout.write(
+			`${id}: ${found.has(id as import("./agents.js").AgentId) ? "detected" : "not found"}\n`,
+		);
+}
+
+const command = process.argv[2];
+if (command === "drain") void main();
+else if (command === "hook") void hookMain();
+else if (command === "install-hooks") void installMain();
+else if (command === "agents") void agentsMain();
