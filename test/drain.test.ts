@@ -130,6 +130,74 @@ test("healthy entry is drained and removed from queue (regression)", async () =>
 	expect(existsSync(deadDir)).toBe(false);
 });
 
+// --- bounded concurrency ---------------------------------------------------
+
+test("MNEMOSYNE_DRAIN_CONCURRENCY=4: classification is unaffected by running entries concurrently", async () => {
+	const { queueDir, deadDir, inbox, ledgerDir } = makeDirs();
+	const healthyNames = [
+		"healthy-1.json",
+		"healthy-2.json",
+		"healthy-3.json",
+		"healthy-4.json",
+	];
+	for (const [i, name] of healthyNames.entries()) {
+		writeFileSync(
+			join(queueDir, name),
+			JSON.stringify({
+				transcript: HEALTHY_TRANSCRIPT,
+				session: `s-healthy-${i}`,
+				cwd: "/repo",
+				ts: "2026-07-05T00:00:00Z",
+			}),
+		);
+	}
+	writeEntry(queueDir, "dead-1.json", "/does/not/exist.jsonl");
+	writeFileSync(
+		join(queueDir, "transient-1.json"),
+		JSON.stringify({
+			transcript: HEALTHY_TRANSCRIPT,
+			session: "s-transient",
+			cwd: "/repo",
+			ts: "2026-07-05T00:00:00Z",
+		}),
+	);
+
+	const captureSession = vi.fn(
+		async ({ session }: { session: string }): Promise<SessionCaptureResult> => {
+			if (session === "s-transient") throw new Error("moneta unreachable");
+			return {
+				status: "captured",
+				learnings: [
+					{
+						text: `PR #201 merged (${session})`,
+						kind: "fact",
+						confidence: 0.9,
+						stored: true,
+					},
+				],
+			};
+		},
+	);
+	const deps = { captureSession, brainInboxDir: inbox, ledgerDir };
+
+	const prevConcurrency = process.env.MNEMOSYNE_DRAIN_CONCURRENCY;
+	process.env.MNEMOSYNE_DRAIN_CONCURRENCY = "4";
+	let res: Awaited<ReturnType<typeof drainQueue>>;
+	try {
+		res = await drainQueue(queueDir, deadDir, deps);
+	} finally {
+		if (prevConcurrency === undefined)
+			delete process.env.MNEMOSYNE_DRAIN_CONCURRENCY;
+		else process.env.MNEMOSYNE_DRAIN_CONCURRENCY = prevConcurrency;
+	}
+
+	// Don't assert on completion order — only the aggregate classification.
+	expect(res).toEqual({ drained: 4, dead: 1, retried: 1 });
+	expect(readdirSync(queueDir)).toEqual(["transient-1.json"]);
+	expect(readdirSync(deadDir)).toEqual(["dead-1.json"]);
+	expect(captureSession).toHaveBeenCalledTimes(5);
+});
+
 // --- concurrent-drain race tolerance -------------------------------------
 
 test("moveToDead: source already gone (claimed by a concurrent drain) returns false and does not throw", () => {
