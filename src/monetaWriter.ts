@@ -10,7 +10,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 // moneta is olympus's memory Worker. This writer POSTs learnings to its
-// /capture endpoint and, like the mem0 path, is FAIL-OPEN: any failure spools
+// /capture endpoint and is FAIL-OPEN: any failure spools
 // the payload to an outbox and returns so a capture can never break the hook
 // pipeline. The CLI `drain` path replays the outbox on its next run.
 

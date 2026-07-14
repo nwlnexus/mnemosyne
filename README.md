@@ -14,9 +14,10 @@ Mnemosyne worker: extract → route → dispatch session learnings. See olympus-
 | `CF_ACCESS_CLIENT_ID` | Cloudflare Access Service Auth client ID (edge gate) | — |
 | `CF_ACCESS_CLIENT_SECRET` | Cloudflare Access Service Auth client secret | — |
 
-### moneta dual-write
+### moneta capture
 
-Phase 1: every learning routed to mem0 is **also** captured to moneta
+moneta is the sole memory sink (the phase-1 mem0 dual-write is retired):
+every routable fact/decision is captured to moneta
 (`POST {MONETA_URL}/capture`). The Bearer token resolves from
 `MONETA_AUTH_TOKEN` first, else from the file at `MONETA_TOKEN_FILE`
 (default `~/.config/moneta/token`). Cloudflare Access Service Auth headers
@@ -24,5 +25,4 @@ Phase 1: every learning routed to mem0 is **also** captured to moneta
 once the domain-wide `moneta-access` app is live. Both are provisioned via
 `~/projects/personal/.env` (nix-darwin-hm op-secrets). Captures are fail-open: any failure spools the
 payload to `${MNEMOSYNE_HOME}/moneta-outbox/` and the next `drain` replays it
-(moneta dedupes server-side). Phase 2 (removing mem0) is tracked in
-`nwlnexus/moneta`.
+(moneta dedupes server-side).

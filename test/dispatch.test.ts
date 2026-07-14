@@ -7,9 +7,8 @@ import type { Learning } from "../src/types.js";
 
 const prov = { session: "s1", cwd: "/repo", ts: "2026-07-05T00:00:00Z" };
 
-test("dispatch writes mem0 payload and brain inbox file for a decision", async () => {
+test("dispatch writes moneta capture and brain inbox file for a decision", async () => {
 	const inbox = mkdtempSync(join(tmpdir(), "inbox-"));
-	const writeMem0 = vi.fn(async () => {});
 	const writeMoneta = vi.fn(async () => {});
 	const l: Learning = {
 		text: "chose D1 over Neon for cost",
@@ -19,13 +18,12 @@ test("dispatch writes mem0 payload and brain inbox file for a decision", async (
 		provenance: prov,
 	};
 	const targets = await dispatch(l, {
-		writeMem0,
 		writeMoneta,
 		brainInboxDir: inbox,
 	});
-	expect(targets.sort()).toEqual(["brain", "mem0", "moneta"]);
-	expect(writeMem0).toHaveBeenCalledOnce();
-	expect(JSON.parse(writeMem0.mock.calls[0][0]).text).toBe(
+	expect(targets.sort()).toEqual(["brain", "moneta"]);
+	expect(writeMoneta).toHaveBeenCalledOnce();
+	expect(JSON.parse(writeMoneta.mock.calls[0][0]).content).toBe(
 		"chose D1 over Neon for cost",
 	);
 	const files = readdirSync(inbox);
@@ -36,9 +34,8 @@ test("dispatch writes mem0 payload and brain inbox file for a decision", async (
 	expect(body).toContain('session: "s1"');
 });
 
-test("dispatch dual-writes a moneta capture alongside mem0", async () => {
+test("dispatch shapes the moneta capture payload correctly", async () => {
 	const inbox = mkdtempSync(join(tmpdir(), "inbox-"));
-	const writeMem0 = vi.fn(async () => {});
 	const writeMoneta = vi.fn(async () => {});
 	const l: Learning = {
 		text: "chose D1 over Neon for cost",
@@ -48,7 +45,6 @@ test("dispatch dual-writes a moneta capture alongside mem0", async () => {
 		provenance: prov,
 	};
 	const targets = await dispatch(l, {
-		writeMem0,
 		writeMoneta,
 		brainInboxDir: inbox,
 	});
@@ -71,9 +67,8 @@ test("dispatch dual-writes a moneta capture alongside mem0", async () => {
 	expect(capture.source).toBe("mnemosyne");
 });
 
-test("dispatch does not invoke moneta or mem0 for a brain-only lesson", async () => {
+test("dispatch does not invoke moneta for a brain-only lesson", async () => {
 	const inbox = mkdtempSync(join(tmpdir(), "inbox-"));
-	const writeMem0 = vi.fn(async () => {});
 	const writeMoneta = vi.fn(async () => {});
 	const l: Learning = {
 		text: "D1 timestamps must be integers",
@@ -82,18 +77,15 @@ test("dispatch does not invoke moneta or mem0 for a brain-only lesson", async ()
 		provenance: prov,
 	};
 	const targets = await dispatch(l, {
-		writeMem0,
 		writeMoneta,
 		brainInboxDir: inbox,
 	});
 	expect(targets).toEqual(["brain"]);
-	expect(writeMem0).not.toHaveBeenCalled();
 	expect(writeMoneta).not.toHaveBeenCalled();
 });
 
 test("dispatch prevents slug collision by appending content hash", async () => {
 	const inbox = mkdtempSync(join(tmpdir(), "inbox-"));
-	const writeMem0 = vi.fn(async () => {});
 	const writeMoneta = vi.fn(async () => {});
 
 	// Two distinct learnings with the same title
@@ -113,8 +105,8 @@ test("dispatch prevents slug collision by appending content hash", async () => {
 		provenance: { session: "s2", cwd: "/repo", ts: "2026-07-05T01:00:00Z" },
 	};
 
-	await dispatch(l1, { writeMem0, writeMoneta, brainInboxDir: inbox });
-	await dispatch(l2, { writeMem0, writeMoneta, brainInboxDir: inbox });
+	await dispatch(l1, { writeMoneta, brainInboxDir: inbox });
+	await dispatch(l2, { writeMoneta, brainInboxDir: inbox });
 
 	const files = readdirSync(inbox);
 	const matchingFiles = files.filter((f) => f.startsWith("dup-title-"));
