@@ -1,0 +1,35 @@
+name: Release
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  release:
+    # Skip the run triggered by semantic-release's own version-bump commit.
+    if: ${{ github.event.head_commit != null && !startsWith(github.event.head_commit.message, 'chore(release):') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # No explicit `version:` — action-setup reads it from the
+      # `packageManager` field in package.json (pnpm@11.9.0). Passing both
+      # throws "Multiple versions of pnpm specified".
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm exec semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
