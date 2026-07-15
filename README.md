@@ -2,6 +2,27 @@
 
 Mnemosyne worker: enqueue session transcripts, POST them to moneta's `/capture-session` (which does ALL extraction/embedding server-side), and route the returned decision/lesson learnings to the local second-brain inbox. See olympus-sdk `docs/superpowers/specs/2026-07-05-mnemosyne-capture-pipeline-design.md`.
 
+## Install
+
+```sh
+npm install -g @nwlnexus/mnemosyne
+```
+
+Requires Node.js `>=24`. This installs the prebuilt `mnemosyne` CLI with zero
+runtime dependencies beyond the Node binary itself — no local build step, no
+git credentials, works on any machine with npm.
+
+Run `mnemosyne install-hooks` afterwards to wire the agent-agnostic hooks
+described below.
+
+### Legacy: nix flake install
+
+Older machines managed via `nix-darwin-hm` may still consume mnemosyne as a
+nix flake package (`nix build .#`, or via the flake's `packages.default`
+output, substituted from the project's own R2 binary cache in CI). This path
+is deprecated in favor of the npm package above and is kept only for
+already-provisioned hosts — new installs should use `npm install -g` instead.
+
 ## Environment
 
 | Var | Purpose | Default |

@@ -1,9 +1,25 @@
 {
   "name": "@nwlnexus/mnemosyne",
   "version": "0.1.0",
+  "description": "mnemosyne — extract → route → dispatch session learnings CLI",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "mnemosyne": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nwlnexus/mnemosyne.git"
+  },
+  "homepage": "https://github.com/nwlnexus/mnemosyne#readme",
+  "bugs": {
+    "url": "https://github.com/nwlnexus/mnemosyne/issues"
   },
   "engines": {
     "node": ">=24"
