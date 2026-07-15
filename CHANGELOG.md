@@ -1,3 +1,10 @@
+# [0.3.0](https://github.com/nwlnexus/mnemosyne/compare/v0.2.1...v0.3.0) (2026-07-15)
+
+
+### Features
+
+* CF Access file-based credential fallback ([1bd7fe8](https://github.com/nwlnexus/mnemosyne/commit/1bd7fe8bde8cf4461e23c2266fe6c5282e59d213)), closes [#30](https://github.com/nwlnexus/mnemosyne/issues/30)
+
 ## [0.2.1](https://github.com/nwlnexus/mnemosyne/compare/v0.2.0...v0.2.1) (2026-07-15)
 
 
