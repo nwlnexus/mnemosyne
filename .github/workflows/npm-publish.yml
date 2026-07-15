@@ -4,10 +4,22 @@
 # release-please / changesets config, so this is a plain tag-triggered
 # publish rather than a fully automated release train.
 #
-# Requires an `NPM_TOKEN` repo secret (npmjs.org automation token with
-# publish rights on the @nwlnexus org) — not provisioned by this workflow,
-# must be added manually via GitHub repo settings (or 1Password + the org's
-# existing secrets-sync path) before the first tag push.
+# Uses npm Trusted Publishing (OIDC) — no NPM_TOKEN, nothing to expire or
+# rotate. https://docs.npmjs.com/trusted-publishers
+#
+# IMPORTANT — sequencing, do not merge this out of order:
+# Trusted Publisher configuration lives on the package's OWN settings page
+# on npmjs.com (npmjs.com/package/@nwlnexus/mnemosyne/access), which does
+# not exist until the package has been published at least once. This repo's
+# very first publish MUST happen with the prior token-based version of this
+# workflow (NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}); only after that
+# bootstrap publish succeeds can a Trusted Publisher be registered for
+# GitHub Actions (org: nwlnexus, repo: mnemosyne, workflow filename:
+# npm-publish.yml, allowed action: npm publish). Only merge this branch
+# once that registration is done — until then it will fail every publish
+# attempt (no token fallback, and OIDC has nothing to authenticate against).
+# Once merged and verified working, revoke/delete the NPM_TOKEN secret —
+# it's no longer used anywhere in this workflow.
 name: npm-publish
 
 on:
@@ -21,8 +33,8 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-      # Enables npm provenance attestation (supply-chain transparency for a
-      # public scoped package) — no separate secret needed.
+      # Required for OIDC (npm Trusted Publishing token exchange) AND for
+      # provenance attestation — same permission covers both.
       id-token: write
     steps:
       - uses: actions/checkout@v4
@@ -61,7 +73,18 @@ jobs:
             exit 1
           fi
 
+      - name: Ensure npm supports Trusted Publishing (>= 11.5.1)
+        # Node 24's bundled npm should already clear this, but pin explicitly
+        # rather than assume — trusted publishing silently isn't attempted on
+        # older npm, which would otherwise fail confusingly at the publish
+        # step with no OIDC and no token.
+        run: npm install -g npm@latest
+
       - name: Publish to npm
+        # No NODE_AUTH_TOKEN — npm CLI exchanges the workflow's OIDC identity
+        # (id-token: write, above) for a short-lived publish credential via
+        # the Trusted Publisher registered on npmjs.com. --provenance kept
+        # explicitly: reports of it not always kicking in automatically on
+        # the first trusted-publish attempt even though npm's docs say it's
+        # automatic (https://github.com/npm/cli/issues/8730).
         run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
