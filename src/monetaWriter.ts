@@ -22,16 +22,18 @@ function monetaUrl(): string {
 	return process.env.MONETA_URL ?? DEFAULT_URL;
 }
 
-// Bearer token resolution (token itself is provisioned out-of-band by
-// nix-darwin-hm — see README), in priority order:
-//   1. MONETA_AUTH_TOKEN env var
-//   2. file at MONETA_TOKEN_FILE (default ~/.config/moneta/token), trimmed
-function resolveToken(): string | null {
-	const fromEnv = process.env.MONETA_AUTH_TOKEN?.trim();
+// Shared credential resolution, in priority order:
+//   1. `envVar` env var
+//   2. file at `fileEnvVar` (falling back to `defaultFile`), trimmed
+//   3. null (caller decides how to treat an unresolved credential)
+function resolveFileBackedCredential(
+	envVar: string,
+	fileEnvVar: string,
+	defaultFile: string,
+): string | null {
+	const fromEnv = process.env[envVar]?.trim();
 	if (fromEnv) return fromEnv;
-	const file =
-		process.env.MONETA_TOKEN_FILE ??
-		join(homedir(), ".config", "moneta", "token");
+	const file = process.env[fileEnvVar] ?? defaultFile;
 	try {
 		return readFileSync(file, "utf8").trim() || null;
 	} catch {
@@ -39,11 +41,37 @@ function resolveToken(): string | null {
 	}
 }
 
+// Bearer token resolution (token itself is provisioned out-of-band by
+// nix-darwin-hm — see README), in priority order:
+//   1. MONETA_AUTH_TOKEN env var
+//   2. file at MONETA_TOKEN_FILE (default ~/.config/moneta/token), trimmed
+function resolveToken(): string | null {
+	return resolveFileBackedCredential(
+		"MONETA_AUTH_TOKEN",
+		"MONETA_TOKEN_FILE",
+		join(homedir(), ".config", "moneta", "token"),
+	);
+}
+
 // Cloudflare Access Service Auth (required at the edge once moneta-access is
 // live). nix-darwin-hm provisions CF_ACCESS_CLIENT_ID/SECRET from 1Password.
+// Each credential mirrors MONETA_AUTH_TOKEN's own resolution: env var first,
+// else a trimmed file read (CF_ACCESS_CLIENT_ID_FILE /
+// CF_ACCESS_CLIENT_SECRET_FILE, defaulting to
+// ~/.config/moneta/cf-access-client-id and
+// ~/.config/moneta/cf-access-client-secret) — headers are simply omitted
+// when a credential can't be resolved either way (fail-open, unchanged).
 function resolveAccessHeaders(): Record<string, string> {
-	const id = process.env.CF_ACCESS_CLIENT_ID?.trim();
-	const secret = process.env.CF_ACCESS_CLIENT_SECRET?.trim();
+	const id = resolveFileBackedCredential(
+		"CF_ACCESS_CLIENT_ID",
+		"CF_ACCESS_CLIENT_ID_FILE",
+		join(homedir(), ".config", "moneta", "cf-access-client-id"),
+	);
+	const secret = resolveFileBackedCredential(
+		"CF_ACCESS_CLIENT_SECRET",
+		"CF_ACCESS_CLIENT_SECRET_FILE",
+		join(homedir(), ".config", "moneta", "cf-access-client-secret"),
+	);
 	if (!id || !secret) return {};
 	return {
 		"CF-Access-Client-Id": id,

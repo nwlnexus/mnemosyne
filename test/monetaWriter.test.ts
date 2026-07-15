@@ -25,6 +25,8 @@ const ENV_KEYS = [
 	"MONETA_TOKEN_FILE",
 	"CF_ACCESS_CLIENT_ID",
 	"CF_ACCESS_CLIENT_SECRET",
+	"CF_ACCESS_CLIENT_ID_FILE",
+	"CF_ACCESS_CLIENT_SECRET_FILE",
 ];
 const saved: Record<string, string | undefined> = {};
 
@@ -55,6 +57,10 @@ beforeEach(() => {
 	process.env.CF_ACCESS_CLIENT_SECRET = "cf-secret";
 	// point token-file resolution somewhere that does not exist by default
 	process.env.MONETA_TOKEN_FILE = join(home, "no-such-token");
+	// same for the CF Access *_FILE fallbacks — env vars above take
+	// precedence in the default fixture, these paths just must not exist
+	process.env.CF_ACCESS_CLIENT_ID_FILE = join(home, "no-such-cf-id");
+	process.env.CF_ACCESS_CLIENT_SECRET_FILE = join(home, "no-such-cf-secret");
 });
 
 afterEach(() => {
@@ -101,6 +107,60 @@ test("writeMoneta resolves the token from MONETA_TOKEN_FILE when env is unset", 
 	expect(fetchMock.mock.calls[0][1].headers.authorization).toBe(
 		"Bearer file-tok",
 	);
+});
+
+test("writeMoneta resolves CF Access headers from *_FILE vars when env is unset", async () => {
+	const fetchMock = okFetch();
+	vi.stubGlobal("fetch", fetchMock);
+	delete process.env.CF_ACCESS_CLIENT_ID;
+	delete process.env.CF_ACCESS_CLIENT_SECRET;
+	const home = process.env.MNEMOSYNE_HOME as string;
+	const idFile = join(home, "cf-access-client-id");
+	const secretFile = join(home, "cf-access-client-secret");
+	writeFileSync(idFile, "file-cf-id\n");
+	writeFileSync(secretFile, "file-cf-secret\n");
+	process.env.CF_ACCESS_CLIENT_ID_FILE = idFile;
+	process.env.CF_ACCESS_CLIENT_SECRET_FILE = secretFile;
+
+	await writeMoneta("{}");
+
+	const headers = fetchMock.mock.calls[0][1].headers;
+	expect(headers["CF-Access-Client-Id"]).toBe("file-cf-id");
+	expect(headers["CF-Access-Client-Secret"]).toBe("file-cf-secret");
+});
+
+test("writeMoneta prefers CF_ACCESS_CLIENT_ID/SECRET env vars over the *_FILE fallback when both are set", async () => {
+	const fetchMock = okFetch();
+	vi.stubGlobal("fetch", fetchMock);
+	const home = process.env.MNEMOSYNE_HOME as string;
+	const idFile = join(home, "cf-access-client-id");
+	const secretFile = join(home, "cf-access-client-secret");
+	writeFileSync(idFile, "file-cf-id\n");
+	writeFileSync(secretFile, "file-cf-secret\n");
+	process.env.CF_ACCESS_CLIENT_ID_FILE = idFile;
+	process.env.CF_ACCESS_CLIENT_SECRET_FILE = secretFile;
+	// env vars from beforeEach ("cf-id" / "cf-secret") remain set
+
+	await writeMoneta("{}");
+
+	const headers = fetchMock.mock.calls[0][1].headers;
+	expect(headers["CF-Access-Client-Id"]).toBe("cf-id");
+	expect(headers["CF-Access-Client-Secret"]).toBe("cf-secret");
+});
+
+test("writeMoneta omits CF Access headers when neither env nor *_FILE resolves a value", async () => {
+	const fetchMock = okFetch();
+	vi.stubGlobal("fetch", fetchMock);
+	delete process.env.CF_ACCESS_CLIENT_ID;
+	delete process.env.CF_ACCESS_CLIENT_SECRET;
+	// CF_ACCESS_CLIENT_ID_FILE / CF_ACCESS_CLIENT_SECRET_FILE point at
+	// nonexistent files per beforeEach
+
+	await writeMoneta("{}");
+
+	const headers = fetchMock.mock.calls[0][1].headers;
+	expect(headers["CF-Access-Client-Id"]).toBeUndefined();
+	expect(headers["CF-Access-Client-Secret"]).toBeUndefined();
 });
 
 test("writeMoneta spools and does not throw on a non-2xx response", async () => {

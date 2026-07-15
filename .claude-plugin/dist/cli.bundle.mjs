@@ -74,19 +74,34 @@ import { join as join4 } from "node:path";
 function monetaUrl() {
   return process.env.MONETA_URL ?? DEFAULT_URL;
 }
-function resolveToken() {
-  const fromEnv = process.env.MONETA_AUTH_TOKEN?.trim();
+function resolveFileBackedCredential(envVar, fileEnvVar, defaultFile) {
+  const fromEnv = process.env[envVar]?.trim();
   if (fromEnv) return fromEnv;
-  const file = process.env.MONETA_TOKEN_FILE ?? join4(homedir2(), ".config", "moneta", "token");
+  const file = process.env[fileEnvVar] ?? defaultFile;
   try {
     return readFileSync2(file, "utf8").trim() || null;
   } catch {
     return null;
   }
 }
+function resolveToken() {
+  return resolveFileBackedCredential(
+    "MONETA_AUTH_TOKEN",
+    "MONETA_TOKEN_FILE",
+    join4(homedir2(), ".config", "moneta", "token")
+  );
+}
 function resolveAccessHeaders() {
-  const id = process.env.CF_ACCESS_CLIENT_ID?.trim();
-  const secret = process.env.CF_ACCESS_CLIENT_SECRET?.trim();
+  const id = resolveFileBackedCredential(
+    "CF_ACCESS_CLIENT_ID",
+    "CF_ACCESS_CLIENT_ID_FILE",
+    join4(homedir2(), ".config", "moneta", "cf-access-client-id")
+  );
+  const secret = resolveFileBackedCredential(
+    "CF_ACCESS_CLIENT_SECRET",
+    "CF_ACCESS_CLIENT_SECRET_FILE",
+    join4(homedir2(), ".config", "moneta", "cf-access-client-secret")
+  );
   if (!id || !secret) return {};
   return {
     "CF-Access-Client-Id": id,
