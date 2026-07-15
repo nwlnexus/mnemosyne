@@ -1,0 +1,67 @@
+# Publish @nwlnexus/mnemosyne to the public npm registry — the "Foundation
+# layer" for native (non-nix) installation (mnemosyne#27). Triggered by
+# pushing a `v*` tag (e.g. `v0.1.0`); the repo has no semantic-release /
+# release-please / changesets config, so this is a plain tag-triggered
+# publish rather than a fully automated release train.
+#
+# Requires an `NPM_TOKEN` repo secret (npmjs.org automation token with
+# publish rights on the @nwlnexus org) — not provisioned by this workflow,
+# must be added manually via GitHub repo settings (or 1Password + the org's
+# existing secrets-sync path) before the first tag push.
+name: npm-publish
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      # Enables npm provenance attestation (supply-chain transparency for a
+      # public scoped package) — no separate secret needed.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # No explicit `version:` — action-setup reads it from the
+      # `packageManager` field in package.json (pnpm@11.9.0). Passing both
+      # throws "Multiple versions of pnpm specified".
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck, lint, test
+        run: |
+          pnpm typecheck
+          pnpm lint
+          pnpm test
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Verify tag matches package.json version
+        # Only meaningful for the tag-push trigger; a workflow_dispatch run
+        # (GITHUB_REF_NAME is a branch name in that case) skips this check.
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          pkg_version="$(node -p "require('./package.json').version")"
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME (version $tag_version) does not match package.json version $pkg_version"
+            exit 1
+          fi
+
+      - name: Publish to npm
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
