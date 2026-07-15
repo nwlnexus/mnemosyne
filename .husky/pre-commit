@@ -1,0 +1,6 @@
+if ! command -v betterleaks >/dev/null 2>&1; then
+	echo "betterleaks not found on PATH — skipping secret scan (brew install betterleaks)" >&2
+	exit 0
+fi
+
+betterleaks git . --staged --no-banner
