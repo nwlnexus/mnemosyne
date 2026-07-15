@@ -14,5 +14,18 @@ module.exports = {
       },
     ],
     "@semantic-release/github",
+    // GitHub's anti-recursion rule silently drops `on: push: tags:` triggers
+    // for tags pushed using the default GITHUB_TOKEN (workflow_dispatch is
+    // explicitly exempted from that rule, unlike push/tag events) — so the
+    // tag @semantic-release/git just pushed will NOT fire npm-publish.yml on
+    // its own. Dispatch it explicitly instead of relying on the tag push to
+    // cascade. Needs `actions: write` in this workflow's permissions.
+    [
+      "@semantic-release/exec",
+      {
+        successCmd:
+          "gh workflow run npm-publish.yml --ref ${nextRelease.gitTag}",
+      },
+    ],
   ],
 };
