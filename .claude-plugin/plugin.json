@@ -1,0 +1,19 @@
+{
+  "name": "mnemosyne",
+  "description": "Extract → route → dispatch session learnings CLI. Self-contained bundle — no separate npm install required.",
+  "version": "0.1.1",
+  "author": {
+    "name": "Nigel Williams-Lucas",
+    "url": "https://github.com/nwlnexus"
+  },
+  "homepage": "https://github.com/nwlnexus/mnemosyne#readme",
+  "repository": "https://github.com/nwlnexus/mnemosyne",
+  "license": "MIT",
+  "keywords": [
+    "memory",
+    "session-learnings",
+    "hooks",
+    "moneta",
+    "second-brain"
+  ]
+}
