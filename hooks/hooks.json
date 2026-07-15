@@ -1,0 +1,38 @@
+{
+  "description": "mnemosyne hooks — SessionStart injects recalled memories, SessionEnd/PreCompact enqueue the transcript for drain. Invokes the bundled, self-contained CLI at ${CLAUDE_PLUGIN_ROOT}/.claude-plugin/dist/cli.bundle.mjs (no separate npm install required). NOTE (mnemosyne#29, out of scope for this plugin's #28 bundling work): if a user ALSO runs `mnemosyne install-hooks` for claude on top of installing this plugin, hooks will fire twice — that dedup gap is tracked separately, not fixed here.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/.claude-plugin/dist/cli.bundle.mjs\" hook claude session-start",
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/.claude-plugin/dist/cli.bundle.mjs\" hook claude enqueue",
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/.claude-plugin/dist/cli.bundle.mjs\" hook claude enqueue",
+            "timeout": 20
+          }
+        ]
+      }
+    ]
+  }
+}

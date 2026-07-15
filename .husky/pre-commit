@@ -1,6 +1,22 @@
 if ! command -v betterleaks >/dev/null 2>&1; then
 	echo "betterleaks not found on PATH — skipping secret scan (brew install betterleaks)" >&2
-	exit 0
+else
+	betterleaks git . --staged --no-banner || exit 1
 fi
 
-betterleaks git . --staged --no-banner
+# Keep the committed Claude Code plugin bundle (.claude-plugin/dist/cli.bundle.mjs)
+# in sync with src/ (mnemosyne#28). No PR-triggered CI workflow currently exists
+# to gate this (nix-cache.yml builds via nix, npm-publish.yml only runs on tag
+# push), so this local pre-commit check is the drift guard for now. Best-effort:
+# skipped (not blocked) when esbuild isn't installed.
+if git diff --cached --name-only | grep -qE '^(src/|\.claude-plugin/dist/)'; then
+	if [ -x node_modules/.bin/esbuild ]; then
+		pnpm run bundle:plugin >/dev/null 2>&1
+		if ! git diff --quiet -- .claude-plugin/dist; then
+			echo "error: .claude-plugin/dist/cli.bundle.mjs is stale relative to src/ — run 'pnpm run bundle:plugin', 'git add .claude-plugin/dist', and re-commit (mnemosyne#28)" >&2
+			exit 1
+		fi
+	else
+		echo "esbuild not installed — skipping plugin bundle drift check (run 'pnpm install')" >&2
+	fi
+fi

@@ -1,2 +1,4 @@
 node_modules
-dist
+/dist
+# The plugin bundle is a committed build artifact, not ignored (mnemosyne#28).
+!/.claude-plugin/dist
