@@ -43,6 +43,8 @@ backend), set at minimum `MONETA_URL` and `MONETA_AUTH_TOKEN` (or
 | `MONETA_TOKEN_FILE` | File to read the Bearer token from (trimmed) if `MONETA_AUTH_TOKEN` is unset | `~/.config/moneta/token` |
 | `CF_ACCESS_CLIENT_ID` | Cloudflare Access Service Auth client ID — only needed if *your* moneta instance sits behind Cloudflare Access | — |
 | `CF_ACCESS_CLIENT_SECRET` | Cloudflare Access Service Auth client secret — same caveat as above | — |
+| `CF_ACCESS_CLIENT_ID_FILE` | File to read the CF Access client ID from (trimmed) if `CF_ACCESS_CLIENT_ID` is unset | `~/.config/moneta/cf-access-client-id` |
+| `CF_ACCESS_CLIENT_SECRET_FILE` | File to read the CF Access client secret from (trimmed) if `CF_ACCESS_CLIENT_SECRET` is unset | `~/.config/moneta/cf-access-client-secret` |
 
 None of these have to be set for mnemosyne to run — with nothing configured
 it talks to the maintainer's own instance, which will simply reject writes
@@ -81,7 +83,13 @@ every routable fact/decision is captured to moneta
 (default `~/.config/moneta/token`). Cloudflare Access Service Auth headers
 (`CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET`) are sent when set — only
 relevant if the moneta instance you've configured sits behind Cloudflare
-Access; most self-hosted moneta deployments won't need these at all.
+Access; most self-hosted moneta deployments won't need these at all. Each of
+those two also has a file-based fallback (`CF_ACCESS_CLIENT_ID_FILE` /
+`CF_ACCESS_CLIENT_SECRET_FILE`, defaulting to
+`~/.config/moneta/cf-access-client-id` and
+`~/.config/moneta/cf-access-client-secret`), resolved the same way as
+`MONETA_TOKEN_FILE` — handy when the process launching mnemosyne (an agent
+hook, not an interactive shell) won't reliably see shell-exported env vars.
 Captures are fail-open: any failure spools the payload to
 `${MNEMOSYNE_HOME}/moneta-outbox/` and the next `drain` replays it (moneta
 dedupes server-side).
@@ -90,5 +98,6 @@ dedupes server-side).
 > `CF_ACCESS_*` vars via a `nix-darwin-hm`-managed `.env` file — that's
 > specific to that one setup, not a requirement of mnemosyne itself. Any
 > mechanism that gets these into the process environment (a plain `.env`
-> sourced by your shell, a secrets manager, `MONETA_TOKEN_FILE` pointing at
-> a file on disk) works equally well.
+> sourced by your shell, a secrets manager, `MONETA_TOKEN_FILE` /
+> `CF_ACCESS_CLIENT_ID_FILE` / `CF_ACCESS_CLIENT_SECRET_FILE` pointing at
+> files on disk) works equally well.
