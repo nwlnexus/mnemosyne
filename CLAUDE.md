@@ -42,10 +42,11 @@ the full per-agent hook reference.
   points at `mem.nwlnexus.io`; it's an override-able default, not a
   requirement, for anyone else running this CLI against their own moneta
   instance.
-- **Nix flake packaging (`flake.nix`) is legacy/deprecated**, kept only for
-  already-provisioned `nix-darwin-hm` hosts (tracked: mnemosyne#33,
-  nix-darwin-hm#58/#61) — do not add new features to it; `npm install -g
-  @nwlnexus/mnemosyne` is the primary, supported install path.
+- **There is no nix packaging anymore** — `flake.nix` and the `nix-cache.yml`
+  CI workflow were removed (mnemosyne#33) once `nix-darwin-hm` migrated to
+  consuming this as an `npm:@nwlnexus/mnemosyne` mise global instead
+  (nix-darwin-hm#58/#61). `npm install -g @nwlnexus/mnemosyne` is the only
+  supported install path — don't reintroduce nix-specific packaging.
 
 ## Layout
 
@@ -58,5 +59,5 @@ the full per-agent hook reference.
 - `.claude-plugin/` — self-contained Claude Code plugin (prebuilt esbuild
   bundle, separate from the `tsc`-built npm package — see its own bundling
   step before assuming the two build outputs are interchangeable).
-- `test/` — vitest; `.github/workflows/` — CI (`nix-cache.yml` legacy nix
-  build, `npm-publish.yml` OIDC publish, `release.yml` semantic-release).
+- `test/` — vitest; `.github/workflows/` — CI (`npm-publish.yml` OIDC
+  publish, `release.yml` semantic-release).

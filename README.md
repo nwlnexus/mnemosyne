@@ -15,14 +15,6 @@ git credentials, works on any machine with npm.
 Run `mnemosyne install-hooks` afterwards to wire the agent-agnostic hooks
 described below.
 
-### Legacy: nix flake install
-
-Older machines managed via `nix-darwin-hm` may still consume mnemosyne as a
-nix flake package (`nix build .#`, or via the flake's `packages.default`
-output, substituted from the project's own R2 binary cache in CI). This path
-is deprecated in favor of the npm package above and is kept only for
-already-provisioned hosts — new installs should use `npm install -g` instead.
-
 ## Configuration
 
 mnemosyne is not tied to any one moneta deployment. **The defaults below
