@@ -1,4 +1,10 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, expect, test } from "vitest";
@@ -87,6 +93,36 @@ test("normalizePayload: gemini finds the newest chat under the project-hash dir"
 	writeFileSync(join(chats, "session-2026-07-13T09-00-aa.json"), "{}");
 	const newest = join(chats, "session-2026-07-14T01-00-bb.json");
 	writeFileSync(newest, "{}");
+	const n = normalizePayload(
+		"gemini",
+		JSON.stringify({ session_id: "g1", cwd: "/repo" }),
+		{ home },
+	);
+	expect(n.transcript).toBe(newest);
+});
+
+// Reproduces the exact condition that made the above test flaky in CI: two
+// writeFileSync calls close enough together that the filesystem records the
+// same mtime (coarse mtime resolution, or just fast-enough execution — this
+// was observed nondeterministically on a Linux CI runner even though the two
+// writes are sequential statements). Force the tie explicitly via utimesSync
+// rather than relying on real timing, so this test is deterministic
+// everywhere instead of depending on filesystem/OS mtime granularity.
+test("normalizePayload: gemini picks the lexicographically later file when mtimes tie", () => {
+	const { createHash } = require("node:crypto");
+	const hash = createHash("sha256").update("/repo").digest("hex");
+	const chats = join(home, ".gemini", "tmp", hash, "chats");
+	mkdirSync(chats, { recursive: true });
+	const older = join(chats, "session-2026-07-13T09-00-aa.json");
+	const newest = join(chats, "session-2026-07-14T01-00-bb.json");
+	writeFileSync(older, "{}");
+	writeFileSync(newest, "{}");
+	// Pin both files to the exact same mtime — this is what a coarse-resolution
+	// filesystem does to two rapid writes; the implementation must not just
+	// keep whichever readdirSync happened to list first.
+	const tiedTime = new Date("2026-07-14T12:00:00Z");
+	utimesSync(older, tiedTime, tiedTime);
+	utimesSync(newest, tiedTime, tiedTime);
 	const n = normalizePayload(
 		"gemini",
 		JSON.stringify({ session_id: "g1", cwd: "/repo" }),

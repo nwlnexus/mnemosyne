@@ -206,7 +206,14 @@ function findGeminiChat(home: string, cwd: string): string | null {
 		} catch {
 			continue;
 		}
-		if (!newest || m > newest.m) newest = { p, m };
+		// Prefer strictly newer mtime; on a tie (coarse filesystem mtime
+		// resolution can make two rapid writes land the same timestamp — observed
+		// nondeterministically in CI), fall back to comparing the path itself.
+		// gemini's session-*.json names embed a sortable timestamp, so this
+		// reliably breaks the tie instead of silently keeping whichever
+		// readdirSync happened to list first.
+		if (!newest || m > newest.m || (m === newest.m && p > newest.p))
+			newest = { p, m };
 	}
 	return newest?.p ?? null;
 }
